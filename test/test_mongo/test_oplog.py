@@ -1,5 +1,6 @@
 import unittest
 import asyncio
+from common.elasticsearch.bson_serializer import BSONSerializer
 from common.mongo.oplog import Oplog
 
 
@@ -9,7 +10,7 @@ class OplogTest(unittest.TestCase):
 
         @oplog.on('data')
         def on_data(doc):
-            print('event data:', doc)
+            print('event data:', BSONSerializer().dumps(doc))
 
         @oplog.on('insert')
         def on_insert(doc):
