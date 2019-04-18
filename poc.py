@@ -8,16 +8,18 @@ import motor.motor_asyncio
 import elasticsearch_async
 import elasticsearch
 
-from common.bson_serializer import BSONSerializer
+from common.elasticsearch.bson_serializer import BSONSerializer
 from config import CONFIG
 
 
 async def tail(coll_oplog, es_client):
     while True:
-        cursor = coll_oplog.find(cursor_type=pymongo.CursorType.TAILABLE,
+        cursor = coll_oplog.find(filter={'op': 'i'},
+                                 cursor_type=pymongo.CursorType.TAILABLE,
                                  no_cursor_timeout=True,
                                  batch_size=100,
-                                 limit=100)
+                                 skip=5000,
+                                 limit=10000)
         while True:
             if not cursor.alive:
                 await asyncio.sleep(1)
@@ -83,7 +85,7 @@ es_client_sync = elasticsearch.Elasticsearch(hosts=CONFIG.ELASTICSEARCH.get('hos
 
 
 async def main():
-    await tail(coll_oplog, es_client)
+    await tail(coll_oplog, es_client_sync)
     # result = await asyncio.wait(asyncio.Task.all_tasks())
     # for r in result:
     #     print(r.result())
@@ -94,10 +96,12 @@ async def main():
 now = datetime.datetime.now()
 loop = asyncio.get_event_loop()
 loop.run_until_complete(main())
-loop.run_until_complete(asyncio.wait(asyncio.Task.all_tasks()))
+loop.run_until_complete(es_client.transport.close())
+loop.run_until_complete(asyncio.wait(asyncio.Task.all_tasks(), return_when=asyncio.ALL_COMPLETED))
 
 # loop.close()
-es_client.transport.close()
+# es_client.transport.close()
+# loop.run_until_complete(asyncio.wait(asyncio.Task.all_tasks(), return_when=asyncio.ALL_COMPLETED))
 # es_client_sync.transport.close()
 # asyncio.ensure_future(main())
 # loop.run_forever()
