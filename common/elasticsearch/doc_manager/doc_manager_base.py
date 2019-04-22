@@ -32,7 +32,7 @@ class DocManagerBase(metaclass=ABCMeta):
     @abstractmethod
     @query_params('_source', '_source_exclude', '_source_include', 'fields',
                   'pipeline', 'refresh', 'routing', 'timeout', 'wait_for_active_shards')
-    def bulk(self, docs, index=None, doc_type=None, params=None, *args, **kwargs):
+    def bulk(self, docs, index=None, doc_type=None, params=None, action=None, *args, **kwargs):
         """"""
 
     @abstractmethod

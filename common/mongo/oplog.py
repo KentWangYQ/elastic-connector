@@ -12,26 +12,29 @@ def _filter(*, ts=None, ns=None, include_ns=None, exclude_ns=None, op=None, incl
     if isinstance(ts, bson.Timestamp):
         q['ts'] = {'$gt': ts}
 
-        # ns
-        q_ns = []
-        if isinstance(ns, str) and ns.endswith('.*'):
+    # ns
+    q_ns = []
+    if isinstance(ns, str):
+        if ns.endswith('.*'):
             q_ns.append({'ns': {'$regex': '^{0}\\.'.format(ns.replace('.*', ''))}})
-        if isinstance(include_ns, list):
-            q_ns.append({'ns': {'$in': include_ns}})
-        if isinstance(exclude_ns, list):
-            q_ns.append({'ns': {'$nin': exclude_ns}})
-        if len(q_ns) > 0:
-            q['$and'] = q_ns
+        else:
+            q_ns.append({'ns': ns})
+    if isinstance(include_ns, list):
+        q_ns.append({'ns': {'$in': include_ns}})
+    if isinstance(exclude_ns, list):
+        q_ns.append({'ns': {'$nin': exclude_ns}})
+    if len(q_ns) > 0:
+        q['$and'] = q_ns
 
-        # op
-        if isinstance(op, str):
-            q['op'] = op
-        elif isinstance(include_ops, list):
-            q['op'] = {'$in': include_ops}
-        elif isinstance(exclude_ops, list):
-            q['op'] = {'$nin': exclude_ops}
+    # op
+    if isinstance(op, str):
+        q['op'] = op
+    elif isinstance(include_ops, list):
+        q['op'] = {'$in': include_ops}
+    elif isinstance(exclude_ops, list):
+        q['op'] = {'$nin': exclude_ops}
 
-        return q
+    return q
 
 
 class Oplog(EventEmitter):
