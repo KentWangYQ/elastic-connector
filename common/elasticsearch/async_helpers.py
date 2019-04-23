@@ -1,5 +1,10 @@
+import asyncio
+import functools
 from elasticsearch_async import AsyncElasticsearch
 from elasticsearch.helpers import *
+from elasticsearch.exceptions import *
+
+RETRY_EXCEPTIONS = [ConnectionError, ConnectionTimeout, ConflictError, RequestError]
 
 
 def _chunk_actions(actions, chunk_size, max_chunk_bytes, serializer):
@@ -41,46 +46,109 @@ def _chunk_actions(actions, chunk_size, max_chunk_bytes, serializer):
 def _process_bulk_chunk(client: AsyncElasticsearch,
                         bulk_actions,
                         bulk_data,
-                        raise_on_exception=True,
-                        raise_on_error=True,
+                        max_retries,
+                        initial_backoff,
+                        max_backoff,
+                        attempted=0,
                         done_callback=None,
                         **kwargs):
     """
     Send a bulk request to elasticsearch and process the output.
     """
-
-    # send the actual request
     future = client.bulk('\n'.join(bulk_actions) + '\n', **kwargs)
-    future.add_done_callback(_process_bulk_result,
-                             bulk_data=bulk_data,
-                             raise_on_exception=raise_on_exception,
-                             raise_on_error=raise_on_error)
-    if done_callback:
-        future.add_done_callback(done_callback,
-                                 bulk_data=bulk_data)
+
+    future.add_done_callback(functools.partial(_process_bulk_result,
+                                               client=client,
+                                               bulk_actions=bulk_actions,
+                                               bulk_data=bulk_data,
+                                               max_retries=max_retries,
+                                               initial_backoff=initial_backoff,
+                                               max_backoff=max_backoff,
+                                               attempted=attempted,
+                                               done_callback=done_callback,
+                                               **kwargs))
+
     return future
 
+    # attempted = 0
+    # while attempted <= max_retries:
+    #     # send the actual request
+    #     future = client.bulk('\n'.join(bulk_actions) + '\n', **kwargs)
+    #     attempted += 1
+    #
+    #     # if raise on error is set, we need to collect errors per chunk before raising them
+    #     try:
+    #         result = yield from future
+    #     except TransportError as e:
+    #         if type(e) not in RETRY_EXCEPTIONS or attempted >= max_retries:
+    #             # todo: 收集failed
+    #             # if we are not propagating, mark all actions in current chunk as failed
+    #             err_message = str(e)
+    #
+    #             for data in bulk_data:
+    #                 # collect all the information about failed actions
+    #                 op_type, action = data[0].copy().popitem()
+    #                 info = {"error": err_message, "status": e.status_code, "exception": e}
+    #                 if op_type != 'delete':
+    #                     info['data'] = data[1]
+    #                 info.update(action)
+    #                 yield (False, info)  # todo 与else中的返回保持一致
+    #     else:
+    #         # go through request-response pairs and detect failures
+    #         def _chunk_result(_bulk_data, _result):
+    #             for _data, (_op_type, item) in zip(_bulk_data, map(methodcaller('popitem'), _result.get('items', []))):
+    #                 _ok = 200 <= item.get('status', 500) < 300
+    #                 yield _ok, {_op_type: item}
+    #
+    #         # region retry
+    #         to_retry, to_retry_data = [], []
+    #
+    #         for data, (ok, info) in zip(bulk_data, _chunk_result(bulk_data, result)):
+    #             action, info = info.popitem()
+    #             if not ok and attempted < max_retries:
+    #                 # _process_bulk_chunk expects strings so we need to
+    #                 # re-serialize the data
+    #                 to_retry.extend(map(client.transport.serializer.dumps, data))
+    #                 to_retry_data.append(data)
+    #             else:
+    #                 # succeed or max retry
+    #                 yield (action, info)  # todo: 确认记录所需的信息
+    #
+    #             # retry only subset of documents that didn't succeed
+    #             if attempted < max_retries:
+    #                 delay = min(max_backoff, initial_backoff * 2 ** (attempted - 1))
+    #                 yield from asyncio.sleep(delay)
+    #                 bulk_actions, bulk_data = to_retry, to_retry_data
+    #         # endregion
 
-def _process_bulk_result(future, **kwargs):
-    bulk_data = kwargs.get('bulk_data', [])
-    raise_on_exception = kwargs.get('raise_on_exception', True)
-    raise_on_error = kwargs.get('raise_on_error', True)
-    errors = []
+
+# region _process_bulk_result
+def _process_bulk_result(future,
+                               client: AsyncElasticsearch,
+                               bulk_actions,
+                               bulk_data,
+                               max_retries,
+                               initial_backoff,
+                               max_backoff,
+                               attempted,
+                               done_callback=None):
+    succeed, failed, result = [], [], {}
     # if raise on error is set, we need to collect errors per chunk before raising them
     if future.cancelled():
-        pass
+        pass  # todo: cancel 处理
     else:
         try:
             result = future.result()
         except TransportError as e:
-            # todo 处理异常
-            # default behavior - just propagate exception
-            if raise_on_exception:
-                raise e
+            if attempted <= max_retries:
+                if type(e) in (ConnectionError, ConnectionTimeout, ConflictError, RequestError):
+                    # request failed retry
+                    _process_bulk_chunk(client, bulk_actions, bulk_data, max_retries, initial_backoff, max_backoff,
+                                        attempted + 1, done_callback)
+                    return
 
             # if we are not propagating, mark all actions in current chunk as failed
             err_message = str(e)
-            exc_errors = []
 
             for data in bulk_data:
                 # collect all the information about failed actions
@@ -89,38 +157,53 @@ def _process_bulk_result(future, **kwargs):
                 if op_type != 'delete':
                     info['data'] = data[1]
                 info.update(action)
-                exc_errors.append({op_type: info})
+                failed.append({op_type: info})
+        else:
+            # go through request-response pairs and detect failures
+            def _chunk_result(_bulk_data, _result):
+                for _data, (_op_type, item) in zip(_bulk_data, map(methodcaller('popitem'), _result['items'])):
+                    _ok = 200 <= item.get('status', 500) < 300
+                    yield _ok, {_op_type: item}
 
-            # emulate standard behavior for failed actions
-            if raise_on_error:
-                raise BulkIndexError('%i document(s) failed to index.' % len(exc_errors), exc_errors)
-            else:
-                for err in exc_errors:
-                    yield False, err
-                return
+            # region retry
+            if attempted <= max_retries:
+                to_retry, to_retry_data = [], []
 
-        # go through request-reponse pairs and detect failures
-        for data, (op_type, item) in zip(bulk_data, map(methodcaller('popitem'), result['items'])):
-            ok = 200 <= item.get('status', 500) < 300
-            if not ok and raise_on_error:
-                # include original document source
-                if len(data) > 1:
-                    item['data'] = data[1]
-                errors.append({op_type: item})
+                for data, (ok, info) in zip(bulk_data, _chunk_result(bulk_data, result)):
+                    action, info = info.popitem()
+                    if not ok:
+                        # _process_bulk_chunk expects strings so we need to
+                        # re-serialize the data
+                        to_retry.extend(map(client.transport.serializer.dumps, data))
+                        to_retry_data.append(data)
+                    else:
+                        succeed.append((action, info))  # todo: 确认成功记录所需的信息
 
-            if ok or not errors:
-                # if we are not just recording all errors to be able to raise
-                # them all at once, yield items individually
-                yield ok, {op_type: item}
+                # retry only subset of documents that didn't succeed
+                delay = min(max_backoff, initial_backoff * 2 ** (attempted - 1))
+                asyncio.sleep(delay)
+                asyncio.get_event_loop().call_later(delay,
+                                                    _process_bulk_chunk,
+                                                    client,
+                                                    to_retry,
+                                                    to_retry_data,
+                                                    max_retries,
+                                                    initial_backoff,
+                                                    max_backoff,
+                                                    attempted + 1,
+                                                    done_callback)
+            # endregion
 
-        if errors:
-            raise BulkIndexError('%i document(s) failed to index.' % len(errors), errors)
+        if done_callback:
+            done_callback(future, succeed, failed)  # todo: 处理成功结果，当前计划记录成功操作，并持久化到ES
+
+
+# endregion
 
 
 def streaming_bulk(client, actions, chunk_size=500, max_chunk_bytes=100 * 1024 * 1024,
-                   raise_on_error=True, expand_action_callback=expand_action,
-                   raise_on_exception=True, max_retries=0, initial_backoff=2,
-                   max_backoff=600, yield_ok=True, **kwargs):
+                   expand_action_callback=expand_action, max_retries=0, initial_backoff=2,
+                   max_backoff=600, done_callback=None, **kwargs):
     """
     Streaming bulk consumes actions from the iterable passed in and yields
     results per action. For non-streaming usecases use
@@ -151,55 +234,28 @@ def streaming_bulk(client, actions, chunk_size=500, max_chunk_bytes=100 * 1024 *
         retry. Any subsequent retries will be powers of ``inittial_backoff *
         2**retry_number``
     :arg max_backoff: maximum number of seconds a retry will wait
-    :arg yield_ok: if set to False will skip successful documents in the output
+    :arg yield_ok: if set to False will skip succeedful documents in the output
     """
+    futures = []
     actions = map(expand_action_callback, actions)
 
     for bulk_data, bulk_actions in _chunk_actions(actions, chunk_size,
                                                   max_chunk_bytes,
                                                   client.transport.serializer):
-        # todo: 异步改造，确认重试的顺序
-        for attempt in range(max_retries + 1):
-            to_retry, to_retry_data = [], []
-            if attempt:
-                time.sleep(min(max_backoff, initial_backoff * 2 ** (attempt - 1)))
+        future = _process_bulk_chunk(client,
+                                     bulk_actions,
+                                     bulk_data,
+                                     max_retries=max_retries,
+                                     initial_backoff=initial_backoff,
+                                     max_backoff=max_backoff,
+                                     done_callback=done_callback,
+                                     **kwargs)
+        futures.append(future)
 
-            try:
-                for data, (ok, info) in zip(
-                        bulk_data,
-                        _process_bulk_chunk(client, bulk_actions, bulk_data,
-                                            raise_on_exception,
-                                            raise_on_error, **kwargs)
-                ):
-
-                    if not ok:
-                        action, info = info.popitem()
-                        # retry if retries enabled, we get 429, and we are not
-                        # in the last attempt
-                        if max_retries \
-                                and info['status'] == 429 \
-                                and (attempt + 1) <= max_retries:
-                            # _process_bulk_chunk expects strings so we need to
-                            # re-serialize the data
-                            to_retry.extend(map(client.transport.serializer.dumps, data))
-                            to_retry_data.append(data)
-                        else:
-                            yield ok, {action: info}
-                    elif yield_ok:
-                        yield ok, info
-
-            except TransportError as e:
-                # suppress 429 errors since we will retry them
-                if not max_retries or e.status_code != 429:
-                    raise
-            else:
-                if not to_retry:
-                    break
-                # retry only subset of documents that didn't succeed
-                bulk_actions, bulk_data = to_retry, to_retry_data
+    return futures
 
 
-# 异步改造
+# todo: 异步改造
 def bulk(client, actions, stats_only=False, **kwargs):
     """
     Helper for the :meth:`~elasticsearch.Elasticsearch.bulk` api that provides
