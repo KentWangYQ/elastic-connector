@@ -44,6 +44,12 @@ def _chunk_actions(actions, chunk_size, max_chunk_bytes, serializer):
 
 
 def _chunk_result(_bulk_data, _result):
+    """
+    Streaming process elasticsearch request result.
+    :param _bulk_data:
+    :param _result:
+    :return:
+    """
     for _data, (_op_type, item) in zip(_bulk_data, map(methodcaller('popitem'), _result.get('items', []))):
         _ok = 200 <= item.get('status', 500) < 300
         yield (_ok, {_op_type: item})
@@ -57,7 +63,7 @@ async def _process_bulk_chunk(client: AsyncElasticsearch,
                               max_backoff,
                               **kwargs):
     """
-    Send a bulk request to elasticsearch and process the output.
+    Send a bulk request to elasticsearch and process the output, it will retry when exception raised.
     """
     attempted = 0
     succeed, failed = [], []
@@ -112,21 +118,9 @@ async def bulk(client, actions, chunk_size=500, max_chunk_bytes=100 * 1024 * 102
                expand_action_callback=expand_action, max_retries=0, initial_backoff=2,
                max_backoff=600, **kwargs):
     """
-    Helper for the :meth:`~elasticsearch.Elasticsearch.bulk` api that provides
+    async helper for the :meth:`~elasticsearch.Elasticsearch.bulk` api that provides
     a more human friendly interface - it consumes an iterator of actions and
-    sends them to elasticsearch in chunks. It returns a tuple with summary
-    information - number of successfully executed actions and either list of
-    errors or number of errors if ``stats_only`` is set to ``True``. Note that
-    by default we raise a ``BulkIndexError`` when we encounter an error so
-    options like ``stats_only`` only apply when ``raise_on_error`` is set to
-    ``False``.
-
-    When errors are being collected original document data is included in the
-    error dictionary which can lead to an extra high memory usage. If you need
-    to process a lot of data and want to ignore/collect errors please consider
-    using the :func:`~elasticsearch.helpers.streaming_bulk` helper which will
-    just return the errors and not store them in memory.
-
+    sends them to elasticsearch in chunks.
 
     :arg client: instance of :class:`~elasticsearch.Elasticsearch` to use
     :arg actions: iterable containing the actions to be executed
@@ -145,12 +139,6 @@ async def bulk(client, actions, chunk_size=500, max_chunk_bytes=100 * 1024 * 102
         retry. Any subsequent retries will be powers of ``inittial_backoff *
         2**retry_number``
     :arg max_backoff: maximum number of seconds a retry will wait
-    :arg yield_ok: if set to False will skip successful documents in the output
-
-    Any additional keyword arguments will be passed to
-    :func:`~elasticsearch.helpers.streaming_bulk` which is used to execute
-    the operation, see :func:`~elasticsearch.helpers.streaming_bulk` for more
-    accepted parameters.
     """
     futures = []
     actions = map(expand_action_callback, actions)
