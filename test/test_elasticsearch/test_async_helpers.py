@@ -25,11 +25,12 @@ class AsyncHelpersTest(unittest.TestCase):
 
         actions = [
             {'_op_type': 'index', '_index': 'rts_test', '_type': 'rt', '_id': 1, 'now': datetime.datetime.now()},
-            {'_op_type': 'index', '_index': 'rts_test', '_type': 'rt', '_id': 2, 'now': datetime.datetime.now()},
+            {'_op_type': 'update', '_index': 'rts_test', '_type': 'rt', '_id': 1, 'now': datetime.datetime.now()},
         ]
-        future = async_helpers.streaming_bulk(client=client, actions=actions,
-                                              done_callback=AsyncHelpersTest.streaming_bulk_done_callback)
+        future = async_helpers.bulk(client=client, actions=actions, max_retries=3, initial_backoff=0.1, max_backoff=1)
         loop = asyncio.get_event_loop()
-        loop.run_until_complete(*future)
+        succeed, failed = loop.run_until_complete(future)
+        print('succeed:', len(succeed), '\nfailed:', len(failed))
+        print(succeed, failed)
         loop.run_until_complete(asyncio.wait(asyncio.Task.all_tasks()))
         loop.close()
