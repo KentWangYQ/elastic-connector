@@ -38,7 +38,8 @@ class DocManager(DocManagerBase):  # todo: 反向处理base
         self.auto_committer = AutoCommitter(self, self.auto_send_interval, self.auto_commit_interval)
         self.auto_committer.start()
 
-    def _index_and_mapping(self, namespace):
+    @staticmethod
+    def _index_and_mapping(namespace):
         index, doc_type = namespace.lower().split('.', 1)
         return index, doc_type
 
