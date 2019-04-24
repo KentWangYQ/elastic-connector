@@ -135,33 +135,3 @@ class MongoDocManagerTest(unittest.TestCase):
         loop.run_until_complete(doc_manager.mongo_doc_manager._es.transport.close())
         loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(loop)))
         loop.close()
-
-    TESTARGS = ("rts_test.rt", 1)
-
-    def _run(self, future):
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(future)
-        loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(loop)))
-        loop.run_until_complete(doc_manager.mongo_doc_manager._es.transport.close())
-        loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(loop)))
-        loop.close()
-
-    def test_upsert(self):
-        doc_manager.mongo_doc_manager.upsert({'_id': 1, 'now': datetime.datetime.now(), 'a': 1, 'b': 2}, *self.TESTARGS)
-        doc_manager.mongo_doc_manager.upsert({'_id': 1, 'now': datetime.datetime.now(), 'a': 3, 'b': 4}, *self.TESTARGS,
-                                             is_update=True)
-        doc_manager.mongo_doc_manager.upsert({'_id': 1, '$set': {'a': 5, 'b': 6}}, *self.TESTARGS,
-                                             is_update=True)
-
-        doc_manager.mongo_doc_manager.upsert({'_id': 1, '$unset': {'a': 1}}, *self.TESTARGS,
-                                             is_update=True)
-        future = doc_manager.mongo_doc_manager.commit()
-        self._run(future)
-
-    def test_delete(self):
-        _id = 1
-        doc_manager.mongo_doc_manager.upsert({'_id': _id, 'now': datetime.datetime.now(), 'a': 1, 'b': 2},
-                                             *self.TESTARGS)
-        doc_manager.mongo_doc_manager.delete(_id, *self.TESTARGS)
-        future = doc_manager.mongo_doc_manager.commit()
-        self._run(future)

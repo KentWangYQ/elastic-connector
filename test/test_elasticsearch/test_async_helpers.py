@@ -25,7 +25,7 @@ class AsyncHelpersTest(unittest.TestCase):
 
         actions = [
             {'_op_type': 'index', '_index': 'rts_test', '_type': 'rt', '_id': 1, 'now': datetime.datetime.now()},
-            {'_op_type': 'update', '_index': 'rts_test', '_type': 'rt', '_id': 1, 'now': datetime.datetime.now()},
+            {'_op_type': 'index', '_index': 'rts_test', '_type': 'rt', '_id': 1, 'now': datetime.datetime.now()},
         ]
         future = async_helpers.bulk(client=client, actions=actions, max_retries=3, initial_backoff=0.1, max_backoff=1)
         loop = asyncio.get_event_loop()

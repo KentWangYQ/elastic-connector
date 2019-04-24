@@ -61,6 +61,7 @@ async def _process_bulk_chunk(client: AsyncElasticsearch,
                               max_retries,
                               initial_backoff,
                               max_backoff,
+                              bulk_timeout=30,
                               **kwargs):
     """
     Send a bulk request to elasticsearch and process the output, it will retry when exception raised.
@@ -74,8 +75,10 @@ async def _process_bulk_chunk(client: AsyncElasticsearch,
 
         # if raise on error is set, we need to collect errors per chunk before raising them
         try:
-            await asyncio.wait({future})
-            result = future.result()
+            result = await asyncio.wait_for(future, bulk_timeout)
+        except asyncio.TimeoutError:
+            # retry
+            pass
         except TransportError as e:
             # todo: process error 429
             if type(e) in NO_RETRY_EXCEPTIONS or attempted > max_retries:
@@ -108,6 +111,10 @@ async def _process_bulk_chunk(client: AsyncElasticsearch,
                 if attempted < max_retries:
                     bulk_actions, bulk_data = to_retry, to_retry_data
 
+            if not to_retry:
+                # all success, no need to retry
+                break
+
         delay = min(max_backoff, initial_backoff * 2 ** (attempted - 1))
         await asyncio.sleep(delay)
 
@@ -124,6 +131,7 @@ async def bulk(client, actions, chunk_size=500, max_chunk_bytes=100 * 1024 * 102
 
     :arg client: instance of :class:`~elasticsearch.Elasticsearch` to use
     :arg actions: iterable containing the actions to be executed
+        ex: {'_op_type': 'index', '_index': 'rts_test', '_type': 'rt', '_id': 1, 'now': datetime.datetime.now()},
     :arg chunk_size: number of docs in one chunk sent to es (default: 500)
     :arg max_chunk_bytes: the maximum size of the request in bytes (default: 100MB)
     :arg raise_on_error: raise ``BulkIndexError`` containing errors (as `.errors`)
@@ -140,22 +148,22 @@ async def bulk(client, actions, chunk_size=500, max_chunk_bytes=100 * 1024 * 102
         2**retry_number``
     :arg max_backoff: maximum number of seconds a retry will wait
     """
-    futures = []
+    coros = []
     actions = map(expand_action_callback, actions)
 
     for bulk_data, bulk_actions in _chunk_actions(actions, chunk_size,
                                                   max_chunk_bytes,
                                                   client.transport.serializer):
-        future = _process_bulk_chunk(client,
-                                     bulk_actions,
-                                     bulk_data,
-                                     max_retries=max_retries,
-                                     initial_backoff=initial_backoff,
-                                     max_backoff=max_backoff,
-                                     **kwargs)
-        futures.append(future)
+        coro = _process_bulk_chunk(client,
+                                   bulk_actions,
+                                   bulk_data,
+                                   max_retries=max_retries,
+                                   initial_backoff=initial_backoff,
+                                   max_backoff=max_backoff,
+                                   **kwargs)
+        coros.append(coro)
 
-    done, _ = await asyncio.wait(futures)
+    done, _ = await asyncio.wait(coros)
     succeed, failed = [], []
     for future in done:
         s, f = future.result()

@@ -1,60 +1,83 @@
-from abc import ABCMeta, abstractmethod
-from elasticsearch.client.utils import query_params
+class DocManagerBase:
+    def apply_update(self, doc, update_spec):
+        """Apply an update operation to a document."""
 
+        if "$set" not in update_spec and "$unset" not in update_spec:
+            # update spec contains the new document in its entirety
+            return update_spec
 
-class DocManagerBase(metaclass=ABCMeta):
-    @abstractmethod
-    @query_params('parent', 'pipeline', 'refresh', 'routing', 'timeout',
-                  'timestamp', 'ttl', 'version', 'version_type', 'wait_for_active_shards')
-    def create(self, index, doc_type, id, doc, params=None, *args, **kwargs):
-        """"""
+        # Helper to cast a key for a list or dict, or raise ValueError
+        def _convert_or_raise(container, key):
+            if isinstance(container, dict):
+                return key
+            elif isinstance(container, list):
+                return int(key)
+            else:
+                raise ValueError
 
-    @abstractmethod
-    @query_params('op_type', 'parent', 'pipeline', 'refresh', 'routing',
-                  'timeout', 'timestamp', 'ttl', 'version', 'version_type',
-                  'wait_for_active_shards')
-    def index(self, index, doc_type, doc, id=None, params=None, *args, **kwargs):
-        """"""
+        # Helper to retrieve (and/or create)
+        # a dot-separated path within a document.
+        def _retrieve_path(container, path, create=False):
+            looking_at = container
+            for part in path:
+                if isinstance(looking_at, dict):
+                    if create and part not in looking_at:
+                        looking_at[part] = {}
+                    looking_at = looking_at[part]
+                elif isinstance(looking_at, list):
+                    index = int(part)
+                    # Do we need to create additional space in the array?
+                    if create and len(looking_at) <= index:
+                        # Fill buckets with None up to the index we need.
+                        looking_at.extend([None] * (index - len(looking_at)))
+                        # Bucket we need gets the empty dictionary.
+                        looking_at.append({})
+                    looking_at = looking_at[index]
+                else:
+                    raise ValueError
+            return looking_at
 
-    @abstractmethod
-    @query_params('_source', '_source_exclude', '_source_include', 'fields',
-                  'lang', 'parent', 'refresh', 'retry_on_conflict', 'routing', 'timeout',
-                  'timestamp', 'ttl', 'version', 'version_type', 'wait_for_active_shards')
-    def update(self, index, doc_type, id, doc=None, params=None, *args, **kwargs):
-        """"""
+        def _set_field(doc, to_set, value):
+            if "." in to_set:
+                path = to_set.split(".")
+                where = _retrieve_path(doc, path[:-1], create=True)
+                index = _convert_or_raise(where, path[-1])
+                wl = len(where)
+                if isinstance(where, list) and index >= wl:
+                    where.extend([None] * (index + 1 - wl))
+                where[index] = value
+            else:
+                doc[to_set] = value
 
-    @abstractmethod
-    @query_params('parent', 'refresh', 'routing', 'timeout', 'version',
-                  'version_type', 'wait_for_active_shards')
-    def delete(self, index, doc_type, id, params=None, *args, **kwargs):
-        """"""
+        def _unset_field(doc, to_unset):
+            try:
+                if "." in to_unset:
+                    path = to_unset.split(".")
+                    where = _retrieve_path(doc, path[:-1])
+                    index_or_key = _convert_or_raise(where, path[-1])
+                    if isinstance(where, list):
+                        # Unset an array element sets it to null.
+                        where[index_or_key] = None
+                    else:
+                        # Unset field removes it entirely.
+                        del where[index_or_key]
+                else:
+                    del doc[to_unset]
+            except (KeyError, IndexError, ValueError):
+                raise
 
-    @abstractmethod
-    @query_params('_source', '_source_exclude', '_source_include', 'fields',
-                  'pipeline', 'refresh', 'routing', 'timeout', 'wait_for_active_shards')
-    def bulk(self, docs, index=None, doc_type=None, params=None, action=None, *args, **kwargs):
-        """"""
+                # wholesale document replacement
 
-    @abstractmethod
-    @query_params('_source', '_source_exclude', '_source_include',
-                  'allow_no_indices', 'analyze_wildcard', 'analyzer', 'conflicts',
-                  'default_operator', 'df', 'expand_wildcards', 'from_',
-                  'ignore_unavailable', 'lenient', 'pipeline', 'preference', 'q',
-                  'refresh', 'request_cache', 'requests_per_second', 'routing', 'scroll',
-                  'scroll_size', 'search_timeout', 'search_type', 'size', 'slices',
-                  'sort', 'stats', 'terminate_after', 'timeout', 'version',
-                  'version_type', 'wait_for_active_shards', 'wait_for_completion')
-    def update_by_query(self, index, doc, query, doc_type=None, params=None, *args, **kwargs):
-        """"""
+        try:
+            # $set
+            for to_set in update_spec.get("$set", []):
+                value = update_spec["$set"][to_set]
+                _set_field(doc, to_set, value)
 
-    @abstractmethod
-    @query_params('_source', '_source_exclude', '_source_include',
-                  'allow_no_indices', 'analyze_wildcard', 'analyzer', 'conflicts',
-                  'default_operator', 'df', 'expand_wildcards', 'from_',
-                  'ignore_unavailable', 'lenient', 'preference', 'q', 'refresh',
-                  'request_cache', 'requests_per_second', 'routing', 'scroll',
-                  'scroll_size', 'search_timeout', 'search_type', 'size', 'slices',
-                  'sort', 'stats', 'terminate_after', 'timeout', 'version',
-                  'wait_for_active_shards', 'wait_for_completion')
-    def delete_by_query(self, index, query, doc_type=None, params=None, *args, **kwargs):
-        """"""
+            # $unset
+            for to_unset in update_spec.get("$unset", []):
+                _unset_field(doc, to_unset)
+
+        except (KeyError, ValueError, AttributeError, IndexError):
+            raise
+        return doc

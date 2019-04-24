@@ -1,96 +1,18 @@
 import re
 import copy
-import bson.json_util
 import logging
-import asyncio
 import threading
+import asyncio
 import elasticsearch_async
 from . import constant
 from .doc_manager_base import DocManagerBase
+from common.elasticsearch import async_helpers
+from .formatters import DefaultDocumentFormatter
 
 
-class DocManager(DocManagerBase):
-    def __init__(self, hosts, *args, **kwargs):
-        client_options = kwargs.get('client_options')
-        self._es = elasticsearch_async.AsyncElasticsearch(hosts=hosts, **client_options)
-
-    def __del__(self):
-        self._es.transport.close()
-
-    def create(self, index, doc_type, id, doc, *args, **kwargs):
-        raise NotImplementedError()
-
-    def index(self, index, doc_type, doc, id=None, *args, **kwargs):
-        if '_id' in doc:
-            del doc['_id']
-        return self._es.index(index=index, doc_type=doc_type, body=doc, id=id, *args, **kwargs)
-
-    def update(self, index, doc_type, id, doc=None, *args, **kwargs):
-        return self._es.update(index=index, doc_type=doc_type, id=id, body={'doc': doc}, *args, **kwargs)
-
-    def delete(self, index, doc_type, id, *args, **kwargs):
-        return self._es.delete(index=index, doc_type=doc_type, id=id, *args, **kwargs)
-
-    def bulk(self, docs, index=None, doc_type=None, action=None, *args, **kwargs):
-        body = []
-        for doc in docs:
-            if '_id' in doc:
-                del doc['_id']
-            # get action
-            action = action
-            if 'action' in doc:
-                action = doc.pop('action')
-            assert action in ['create', 'index', 'update', 'delete'], 'Invalid action in bulk docs!'
-            # get metadata
-            metadata = {}
-            valid_metadata = ['_index', '_type', '_id', '_parent', '_routing']
-            if 'metadata' in doc:
-                metadata = doc.pop('metadata')
-                assert isinstance(metadata, dict), 'metadata must be a dict!'
-                for m in metadata:
-                    if m not in valid_metadata:
-                        logging.warning('"%s" is not a valid metadata' % m)
-                        del metadata[m]
-            body.append({action: metadata})
-
-            if action in ['create', 'index']:
-                body.append(doc)
-            elif action == 'update':
-                body.append({'doc': doc})
-            elif action == 'delete':
-                pass
-        return self._es.bulk(body=body, index=index, doc_type=doc_type, *args, **kwargs)
-
-    def update_by_query(self, index, doc, query, doc_type=None, *args, **kwargs):
-        inline = ''
-        if doc:
-            for k in doc:
-                ks = copy.deepcopy(k)
-                for key in re.findall(r'\.\d+', k):
-                    ks = ks.replace(key, '[%s]' % key[1:])
-                inline += 'ctx._source.%s=params.%s' % (ks, k.replace('.', ''))
-
-            for k in doc:
-                if '.' in k:
-                    kr = k.replace('.', '')
-                    doc[kr] = doc[k]
-                    del doc[k]
-        else:
-            inline += 'ctx._source={};'
-
-        query = query or {'match_all': {}}
-        body = {'query': query, 'script': {'inline': inline, 'params': doc, 'lang': 'painless'}}
-        return self._es.update_by_query(index=index, doc_type=doc_type, body=body, *args, **kwargs)
-
-    def delete_by_query(self, index, query, doc_type=None, *args, **kwargs):
-        query = query or {'match_all': {}}
-        body = {'query': query}
-        return self._es.delete_by_query(index=index, body=body, doc_type=doc_type, *args, **kwargs)
-
-
-class DocManager1(object):  # todo: 反向处理base
+class DocManager(DocManagerBase):  # todo: 反向处理base
     def __init__(self,
-                 url,
+                 hosts,
                  auto_commit_interval=constant.DEFAULT_COMMIT_INTERVAL,
                  unique_key='_id',
                  chunk_size=constant.DEFAULT_MAX_BULK,
@@ -99,10 +21,10 @@ class DocManager1(object):  # todo: 反向处理base
                  attachment_field='content',
                  **kwargs):
         client_options = kwargs.get('client_options')
-        if type(url) is not list:
-            url = [url]
-        self.elastic = elasticsearch_async.AsyncElasticsearch(hosts=url, **client_options)
-        self._formatter = None  # todo 实现formatter
+        if type(hosts) is not list:
+            hosts = [hosts]
+        self._es = elasticsearch_async.AsyncElasticsearch(hosts=hosts, **client_options)
+        self._formatter = DefaultDocumentFormatter()  # todo 验证formatter
         self.bulk_buffer = BulkBuffer(self)
         self.look = threading.Lock()  # todo: 确认实际应用场景
 
@@ -120,17 +42,19 @@ class DocManager1(object):  # todo: 反向处理base
         index, doc_type = namespace.lower().split('.', 1)
         return index, doc_type
 
-    def apply_update(self, doc, update_spec):
-        assert isinstance(doc, dict), 'doc must be a dict'
-        assert isinstance(update_spec, dict), 'update_spec must be a dict'
-        doc.update(update_spec)
-        return doc
-
     def upsert(self, doc, namespace, timestamp, is_update=False):
+        """
+
+        :param doc: native object
+        :param namespace:
+        :param timestamp:
+        :param is_update:
+        :return:
+        """
         index, doc_type = self._index_and_mapping(namespace)
         doc_id = str(doc.pop('_id'))
 
-        _original_op_type = 'update' if is_update else 'insert'
+        _original_op_type = 'update' if is_update else 'index'
         _op_type = _original_op_type
 
         doc = self._formatter.format_document(doc)
@@ -164,13 +88,34 @@ class DocManager1(object):  # todo: 反向处理base
                         }
         }
         self.index(action, meta_action)
-        doc['_id'] = doc_id
 
-    def delete(self):
-        pass
+    def delete(self, doc_id, namespace, timestamp):
+        index, doc_type = self._index_and_mapping(namespace)
+        action = {
+            '_op_type': 'delete',
+            '_index': index,
+            '_type': doc_type,
+            '_id': doc_id
+        }
+
+        meta_action = {
+            '_index': self.meta_index_name,
+            '_type': self.meta_type,
+            '_source': {'ns': namespace,
+                        '_ts': timestamp,
+                        'op': 'delete',
+                        'doc_id': doc_id,
+                        'status': constant.ActionStatus.processing
+                        }
+        }
+        self.index(action, meta_action)
 
     def bulk_upsert(self):
-        pass
+        """
+        Insert multiple documents into Elasticsearch directly.
+        :return:
+        """
+        raise NotImplementedError()
 
     def index(self, action, meta_action):
         self.bulk_buffer.add_upsert(action, meta_action)
@@ -179,7 +124,17 @@ class DocManager1(object):  # todo: 反向处理base
             self.commit()
 
     def commit(self):
-        pass
+        return asyncio.wait_for(self.send_buffered_operations(), None)
+
+    async def send_buffered_operations(self):
+        action_buffer = self.bulk_buffer.get_buffer()
+        if action_buffer:
+            coro = async_helpers.bulk(client=self._es, actions=action_buffer, max_retries=3, initial_backoff=0.1,
+                                      max_backoff=1)
+            succeed, failed = await asyncio.wait_for(coro, None)
+            print('succeed:', len(succeed), 'failed:', len(failed))
+            print(succeed, failed)
+            # todo: 持久化记录
 
     def _search(self):
         pass
@@ -226,7 +181,7 @@ class BulkBuffer:
     def bulk_index(self, action, meta_action):
         action['_i'] = self._get_i()
 
-        self.action_buffer[action.get('_id')] = action
+        self.action_buffer[str(action.get('_id'))] = action
         self.action_log.append(meta_action)
         self._count += 1
 
