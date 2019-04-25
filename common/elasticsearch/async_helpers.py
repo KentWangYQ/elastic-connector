@@ -134,10 +134,6 @@ async def bulk(client, actions, chunk_size=500, max_chunk_bytes=100 * 1024 * 102
         ex: {'_op_type': 'index', '_index': 'rts_test', '_type': 'rt', '_id': 1, 'now': datetime.datetime.now()},
     :arg chunk_size: number of docs in one chunk sent to es (default: 500)
     :arg max_chunk_bytes: the maximum size of the request in bytes (default: 100MB)
-    :arg raise_on_error: raise ``BulkIndexError`` containing errors (as `.errors`)
-        from the execution of the last chunk when some occur. By default we raise.
-    :arg raise_on_exception: if ``False`` then don't propagate exceptions from
-        call to ``bulk`` and just report the items that failed as failed.
     :arg expand_action_callback: callback executed on each action passed in,
         should return a tuple containing the action line and the data line
         (`None` if data line should be omitted).
