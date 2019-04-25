@@ -1,3 +1,4 @@
+import uuid
 import threading
 import asyncio
 import elasticsearch_async
@@ -174,7 +175,7 @@ class DocManager(DocManagerBase):
     async def send_buffered_actions(self):
         """Send buffered actions to Elasticsearch"""
         if self.bulk_buffer.count() > 0:
-            action_buffer = self.bulk_buffer.get_buffer()
+            action_buffer, chunk_id = self.bulk_buffer.get_buffer()
             coro = async_helpers.bulk(client=self._es, actions=action_buffer, max_retries=3, initial_backoff=0.1,
                                       max_backoff=1)
             succeed, failed = await asyncio.ensure_future(coro)
@@ -229,14 +230,19 @@ class BulkBuffer:
         self.docman = docman  # doc manager
         self.action_buffer = {}  # Action buffer for bulk indexing
         # todo: 处理log
-        self.action_log = []  # Action log for ES operation
+        self.action_logs = []  # Action log for ES operation
         self._i = -1  # priority for action
         self._count = 0  # action count
+
+        self._refresh_chunk_id()
 
     def _get_i(self):
         # todo: 多进程需要加锁
         self._i += 1
         return self._i
+
+    def _refresh_chunk_id(self):
+        self._chunk_id = uuid.uuid1()
 
     def count(self):
         return self._count
@@ -255,9 +261,10 @@ class BulkBuffer:
 
     def bulk_index(self, action, meta_action):
         action['_i'] = self._get_i()
+        meta_action['_chunk_id'] = self._chunk_id
 
         self.action_buffer[str(action.get('_id'))] = action
-        self.action_log.append(meta_action)
+        self.action_logs.append(meta_action)
         self._count += 1
 
     def reset_action(self, _id):
@@ -266,10 +273,22 @@ class BulkBuffer:
     def clean_up(self):
         self._count = 0
         self.action_buffer = {}
+        self._refresh_chunk_id()
 
     def get_buffer(self):
         if not self._count:
-            return []
-        es_buffer = sorted(self.action_buffer.values(), key=lambda ac: ac['_id'])
+            return [], self._chunk_id
+        es_buffer, _current_chunk_id = sorted(self.action_buffer.values(), key=lambda ac: ac['_id']), self._chunk_id
         self.clean_up()
-        return es_buffer
+        return es_buffer, _current_chunk_id
+
+    def get_action_logs(self, chunk_size=1000):
+        if self.action_logs:
+            i = 0
+            while True:
+                if self.action_logs[0]['status'] == constant.ActionStatus.processing:
+                    break
+                yield self.action_logs.pop(0)
+                i += 1
+                if i >= chunk_size:
+                    break

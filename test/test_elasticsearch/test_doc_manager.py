@@ -61,7 +61,9 @@ class MongoDocManagerTest(unittest.TestCase):
                                                                      auto_commit_interval=-1,
                                                                      auto_commit=True,  # start auto committer
                                                                      )
-        mongo_doc_manager.index({'_id': 1, 'now': datetime.datetime.now(), 'a': 1, 'b': 2}, *self.TESTARGS)
+        mongo_doc_manager.index(
+            {'_id': 1, 'now': datetime.datetime.now(), 'a': 1, 'b': 2, 'user': [{'name': 'kent'}, {'name': 'job'}]},
+            *self.TESTARGS)
         # stop auto commit
         asyncio.ensure_future(mongo_doc_manager.stop())
 
