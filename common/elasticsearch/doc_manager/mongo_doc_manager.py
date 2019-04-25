@@ -1,6 +1,3 @@
-import re
-import copy
-import logging
 import threading
 import asyncio
 import elasticsearch_async
@@ -10,7 +7,7 @@ from common.elasticsearch import async_helpers
 from .formatters import DefaultDocumentFormatter
 
 
-class DocManager(DocManagerBase):  # todo: 反向处理base
+class DocManager(DocManagerBase):
     def __init__(self,
                  hosts,
                  auto_commit_interval=constant.DEFAULT_COMMIT_INTERVAL,
@@ -19,6 +16,7 @@ class DocManager(DocManagerBase):  # todo: 反向处理base
                  meta_index_name='mongodb_meta',
                  meta_type='mongodb_meta',
                  attachment_field='content',
+                 auto_commit=False,
                  **kwargs):
         client_options = kwargs.get('client_options')
         if type(hosts) is not list:
@@ -28,7 +26,13 @@ class DocManager(DocManagerBase):  # todo: 反向处理base
         self.bulk_buffer = BulkBuffer(self)
         self.look = threading.Lock()  # todo: 确认实际应用场景
 
+        # auto_commit_interval < 0: do not commit automatically
+        # auto_commit_interval = 0: commit each request;
+        # auto_commit_interval > 0: auto commit every auto_commit_interval seconds
         self.auto_commit_interval = auto_commit_interval
+        # auto_send_interval < 0: do not send automatically
+        # auto_send_interval = 0: send each request;
+        # auto_send_interval > 0: auto send every auto_commit_interval seconds
         self.auto_send_interval = kwargs.get('auto_send_interval', constant.DEFAULT_SEND_INTERVAL)
         self.meta_index_name = meta_index_name
         self.meta_type = meta_type
@@ -36,16 +40,22 @@ class DocManager(DocManagerBase):  # todo: 反向处理base
         self.chunk_size = chunk_size
         self.attachment_field = attachment_field
         self.auto_committer = AutoCommitter(self, self.auto_send_interval, self.auto_commit_interval)
-        self.auto_committer.start()
+        if auto_commit:
+            asyncio.ensure_future(self.auto_committer.run())
 
     @staticmethod
     def _index_and_mapping(namespace):
+        """
+        Namespace to index and doc_type
+        :param namespace:
+        :return:
+        """
         index, doc_type = namespace.lower().split('.', 1)
         return index, doc_type
 
-    def upsert(self, doc, namespace, timestamp, is_update=False):
+    def _upsert(self, doc, namespace, timestamp, is_update=False):
         """
-
+        index or update document
         :param doc: native object
         :param namespace:
         :param timestamp:
@@ -88,9 +98,52 @@ class DocManager(DocManagerBase):  # todo: 反向处理base
                         'status': constant.ActionStatus.processing
                         }
         }
-        self.index(action, meta_action)
+        self._push_to_buffer(action, meta_action)
+
+    def _push_to_buffer(self, action, meta_action):
+        """Push action and meta_action to buffer
+
+        If buffer size larger than chunk size, commit buffered actions to Elasticsearch
+        :param action:
+        :param meta_action:
+        :return:
+        """
+        # push action to buffer
+        self.bulk_buffer.add_action(action, meta_action)
+
+        #
+        if self.bulk_buffer.count() >= self.chunk_size or self.auto_commit_interval == 0:
+            # commit
+            self.commit()
+
+    def index(self, doc, namespace, timestamp):
+        """
+        Index document
+        :param doc:
+        :param namespace:
+        :param timestamp:
+        :return:
+        """
+        self._upsert(doc, namespace, timestamp)
+
+    def update(self, doc, namespace, timestamp):
+        """
+        Update document
+        :param doc:
+        :param namespace:
+        :param timestamp:
+        :return:
+        """
+        self._upsert(doc, namespace, timestamp, is_update=True)
 
     def delete(self, doc_id, namespace, timestamp):
+        """
+        Delete document by doc_id
+        :param doc_id:
+        :param namespace:
+        :param timestamp:
+        :return:
+        """
         index, doc_type = self._index_and_mapping(namespace)
         action = {
             '_op_type': 'delete',
@@ -109,7 +162,7 @@ class DocManager(DocManagerBase):  # todo: 反向处理base
                         'status': constant.ActionStatus.processing
                         }
         }
-        self.index(action, meta_action)
+        self._push_to_buffer(action, meta_action)
 
     def bulk_upsert(self):
         """
@@ -118,56 +171,77 @@ class DocManager(DocManagerBase):  # todo: 反向处理base
         """
         raise NotImplementedError()
 
-    def index(self, action, meta_action):
-        self.bulk_buffer.add_upsert(action, meta_action)
-
-        if self.bulk_buffer.count() >= self.chunk_size or self.auto_commit_interval == 0:
-            self.commit()
-
-    def commit(self):
-        return asyncio.wait_for(self.send_buffered_operations(), None)
-
-    async def send_buffered_operations(self):
-        action_buffer = self.bulk_buffer.get_buffer()
-        if action_buffer:
+    async def send_buffered_actions(self):
+        """Send buffered actions to Elasticsearch"""
+        if self.bulk_buffer.count() > 0:
+            action_buffer = self.bulk_buffer.get_buffer()
             coro = async_helpers.bulk(client=self._es, actions=action_buffer, max_retries=3, initial_backoff=0.1,
                                       max_backoff=1)
-            succeed, failed = await asyncio.wait_for(coro, None)
+            succeed, failed = await asyncio.ensure_future(coro)
             print('succeed:', len(succeed), 'failed:', len(failed))
             print(succeed, failed)
             # todo: 持久化记录
 
-    def _search(self):
-        pass
+    async def commit(self):
+        """Send bulk buffer to Elasticsearch, then refresh."""
+        # send
+        await self.send_buffered_actions()
+        # commit
+        await self._es.indices.refresh()
 
-    def _get_last_doc(self):
+    async def stop(self):
+        """Stop auto committer"""
+        await self.auto_committer.stop()
+
+    def handle_command(self, command_doc, namespace, timestamp):
+        raise NotImplementedError()
+
+    def search(self):
         pass
 
 
 class AutoCommitter:
-    def __init__(self, docman, send_interval, commit_interval, sleep_interval=1):
-        pass
+    def __init__(self, docman, send_interval=0, commit_interval=0, sleep_interval=1):
+        self.docman = docman
+        self._send_interval = send_interval
+        self._commit_interval = commit_interval
+        self._auto_send = self._send_interval > 0
+        self._auto_commit = self._commit_interval > 0
+        self._sleep_interval = sleep_interval
+        self._stopped = False
 
-    def start(self):
-        pass
+    async def run(self):
+        while not self._stopped:
+            if self._auto_commit:
+                await self.docman.commit()
+
+            elif self._auto_send:
+                await self.docman.send_buffered_actions()
+
+            await asyncio.sleep(self._sleep_interval)
+
+    async def stop(self):
+        self._stopped = True
 
 
 class BulkBuffer:
     def __init__(self, docman):
-        self.docman = docman
+        self.docman = docman  # doc manager
         self.action_buffer = {}  # Action buffer for bulk indexing
+        # todo: 处理log
         self.action_log = []  # Action log for ES operation
-        self._i = -1
-        self._count = 0
+        self._i = -1  # priority for action
+        self._count = 0  # action count
 
     def _get_i(self):
+        # todo: 多进程需要加锁
         self._i += 1
         return self._i
 
     def count(self):
         return self._count
 
-    def add_upsert(self, action, meta_action):
+    def add_action(self, action, meta_action):
         """
         兼容
         :param action:
@@ -190,9 +264,12 @@ class BulkBuffer:
         self.action_buffer[_id] = {}
 
     def clean_up(self):
+        self._count = 0
         self.action_buffer = {}
 
     def get_buffer(self):
+        if not self._count:
+            return []
         es_buffer = sorted(self.action_buffer.values(), key=lambda ac: ac['_id'])
         self.clean_up()
         return es_buffer

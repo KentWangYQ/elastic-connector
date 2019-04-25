@@ -1,5 +1,6 @@
 class DocManagerBase:
-    def apply_update(self, doc, update_spec):
+    @staticmethod
+    def apply_update(doc, update_spec):
         """Apply an update operation to a document."""
 
         if "$set" not in update_spec and "$unset" not in update_spec:
@@ -81,3 +82,35 @@ class DocManagerBase:
         except (KeyError, ValueError, AttributeError, IndexError):
             raise
         return doc
+
+    def index(self, doc, namespace, timestamp):
+        """Index document"""
+        raise NotImplementedError()
+
+    def update(self, doc, namespace, timestamp):
+        """Update document"""
+        raise NotImplementedError()
+
+    def delete(self, doc_id, namespace, timestamp):
+        """Delete document by doc_id"""
+        raise NotImplementedError()
+
+    def handle_command(self, command_doc, namespace, timestamp):
+        """Handle a command."""
+        raise NotImplementedError()
+
+    def bulk_upsert(self):
+        """"""
+        raise NotImplementedError()
+
+    def commit(self):
+        """Send bulk buffer to Elasticsearch, then refresh."""
+        raise NotImplementedError()
+
+    def stop(self):
+        """Stop auto committer"""
+        raise NotImplementedError()
+
+    def search(self):
+        """"""
+        raise NotImplementedError()

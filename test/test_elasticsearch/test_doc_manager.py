@@ -21,147 +21,50 @@ es = Elasticsearch(hosts=config.CONFIG.ELASTICSEARCH.get('hosts'),
 
 
 class MongoDocManagerTest(unittest.TestCase):
-    index, doc_type = 'rts_test', 'rt'
-
-    def test_index(self):
-        future = doc_manager.mongo_doc_manager.index(index=self.index,
-                                                     doc_type=self.doc_type,
-                                                     doc={
-                                                         "_id": bson.ObjectId("5cb82deea359465f0ab8c722"),
-                                                         "create_time": datetime.datetime(2019, 3, 6, 3, 12, 45,
-                                                                                          371000),
-                                                         "update_time": datetime.datetime(2019, 3, 6, 3, 12, 45,
-                                                                                          371000),
-                                                         "ip_address": "221.232.96.96"
-                                                     },
-                                                     id=bson.ObjectId("5cb82deea359465f0ab8c722"))
-        loop = asyncio.get_event_loop()
-        # loop.set_debug(True)
-        loop.run_until_complete(future)
-        loop.run_until_complete(doc_manager.mongo_doc_manager._es.transport.close())
-        loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(loop)))
-        loop.close()
-
-    def test_update(self):
-        future = doc_manager.mongo_doc_manager.update(index=self.index,
-                                                      doc_type=self.doc_type,
-                                                      doc={"ip_address": "221.232.96.97",
-                                                           "note": {"t": "This is update test"}},
-                                                      id=bson.ObjectId("5cb82deea359465f0ab8c722"))
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(future)
-        loop.run_until_complete(doc_manager.mongo_doc_manager._es.transport.close())
-        loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(loop)))
-        loop.close()
-
-    def test_delete(self):
-        future = doc_manager.mongo_doc_manager.delete(index=self.index,
-                                                      doc_type=self.doc_type,
-                                                      id=bson.ObjectId("5cb82deea359465f0ab8c722"))
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(future)
-        loop.run_until_complete(doc_manager.mongo_doc_manager._es.transport.close())
-        loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(loop)))
-        loop.close()
-
-    def test_bulk(self):
-        es.index(index=self.index, doc_type=self.doc_type, body={'now': datetime.datetime.now()}, id=1)
-        es.index(index=self.index, doc_type=self.doc_type, body={'now': datetime.datetime.now()}, id=2)
-        future = doc_manager.mongo_doc_manager.bulk([
-            {
-                'action': 'index',
-                'metadata': {
-                    '_index': self.index,
-                    '_type': self.doc_type,
-                    '_id': 3,
-                },
-                'now': datetime.datetime.now()
-            },
-            {
-                'action': 'update',
-                'metadata': {
-                    '_index': self.index,
-                    '_type': self.doc_type,
-                    '_id': '1',
-                },
-                'now1': datetime.datetime.now()
-            },
-            {
-                'action': 'delete',
-                'metadata': {
-                    '_index': self.index,
-                    '_type': self.doc_type,
-                    '_id': 2
-                },
-            }
-        ])  # type:asyncio.Future
-
-        future.add_done_callback(MongoDocManagerTest._cb)
-
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(future)
-        loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(loop)))
-        loop.run_until_complete(doc_manager.mongo_doc_manager._es.transport.close())
-        loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(loop)))
-        loop.close()
-
-    @staticmethod
-    def _cb(fut):
-        print(fut)
-
-    def test_update_by_query(self):
-        es.index(index=self.index, doc_type=self.doc_type, body={'now': datetime.datetime.now()}, id=1, refresh=True,
-                 wait_for_active_shards='all')
-        future = doc_manager.mongo_doc_manager.update_by_query(index=self.index,
-                                                               doc={'now1': datetime.datetime.now()},
-                                                               query={'term': {'_id': '1'}}, doc_type=self.doc_type)
-
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(future)
-        loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(loop)))
-        loop.run_until_complete(doc_manager.mongo_doc_manager._es.transport.close())
-        loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(loop)))
-        loop.close()
-
-    def test_delete_by_query(self):
-        es.index(index=self.index, doc_type=self.doc_type, body={'now': datetime.datetime.now()}, id=1, refresh=True,
-                 wait_for_active_shards='all')
-        future = doc_manager.mongo_doc_manager.delete_by_query(index=self.index,
-                                                               query={'term': {'_id': '1'}}, doc_type=self.doc_type)
-
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(future)
-        loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(loop)))
-        loop.run_until_complete(doc_manager.mongo_doc_manager._es.transport.close())
-        loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(loop)))
-        loop.close()
-
     TESTARGS = ("rts_test.rt", 1)
 
     def _run(self, future):
         loop = asyncio.get_event_loop()
         loop.run_until_complete(future)
         loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(loop)))
-        loop.run_until_complete(doc_manager.mongo_doc_manager._es.transport.close())
-        loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(loop)))
-        loop.close()
+        # loop.run_until_complete(doc_manager.mongo_dm._es.transport.close())
+        # loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(loop)))
+        # loop.close()
 
     def test_upsert(self):
-        doc_manager.mongo_doc_manager.upsert({'_id': 1, 'now': datetime.datetime.now(), 'a': 1, 'b': 2}, *self.TESTARGS)
-        doc_manager.mongo_doc_manager.upsert({'_id': 1, 'now': datetime.datetime.now(), 'a': 3, 'b': 4}, *self.TESTARGS,
-                                             is_update=True)
-        doc_manager.mongo_doc_manager.upsert({'_id': 1, '$set': {'a': 5, 'b': 6}}, *self.TESTARGS,
-                                             is_update=True)
+        doc_manager.mongo_dm.index({'_id': 1, 'now': datetime.datetime.now(), 'a': 1, 'b': 2}, *self.TESTARGS)
+        doc_manager.mongo_dm.update({'_id': 1, 'now': datetime.datetime.now(), 'a': 3, 'b': 4}, *self.TESTARGS)
+        doc_manager.mongo_dm.update({'_id': 1, '$set': {'a': 5, 'b': 6}}, *self.TESTARGS)
 
-        doc_manager.mongo_doc_manager.upsert({'_id': 1, '$unset': {'a': 1}}, *self.TESTARGS,
-                                             is_update=True)
-        future = doc_manager.mongo_doc_manager.commit()
+        doc_manager.mongo_dm.update({'_id': 1, '$unset': {'a': 1}}, *self.TESTARGS)
+        future = doc_manager.mongo_dm.commit()
         self._run(future)
 
     def test_delete(self):
         _id = 1
-        doc_manager.mongo_doc_manager.upsert({'_id': _id, 'now': datetime.datetime.now(), 'a': 1, 'b': 2},
-                                             *self.TESTARGS)
-        doc_manager.mongo_doc_manager.delete(_id, *self.TESTARGS)
-        future = doc_manager.mongo_doc_manager.commit()
+        doc_manager.mongo_dm.index({'_id': _id, 'now': datetime.datetime.now(), 'a': 1, 'b': 2}, *self.TESTARGS)
+        doc_manager.mongo_dm.delete(_id, *self.TESTARGS)
+        future = doc_manager.mongo_dm.commit()
         self._run(future)
+
+    def test_auto_committer(self):
+        mongo_doc_manager = doc_manager.mongo_doc_manager.DocManager(hosts=config.CONFIG.ELASTICSEARCH.get('hosts'),
+                                                                     client_options={
+                                                                         'timeout': 120,
+                                                                         'retry_on_timeout': True,
+                                                                         'sniff_on_start': False,
+                                                                         'sniff_on_connection_fail': True,
+                                                                         'sniffer_timeout': 60,
+                                                                         'max_retries': 3,
+                                                                         'serializer': BSONSerializer()
+                                                                     },
+                                                                     auto_commit_interval=-1,
+                                                                     auto_commit=True,  # start auto committer
+                                                                     )
+        mongo_doc_manager.index({'_id': 1, 'now': datetime.datetime.now(), 'a': 1, 'b': 2}, *self.TESTARGS)
+        # stop auto commit
+        asyncio.ensure_future(mongo_doc_manager.stop())
+
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(loop)))
+        # loop.close()
