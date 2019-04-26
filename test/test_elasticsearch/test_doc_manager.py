@@ -32,7 +32,7 @@ class MongoDocManagerTest(unittest.TestCase):
         # loop.close()
 
     def test_upsert(self):
-        doc_manager.mongo_dm.index({'_id': 1, 'now': datetime.datetime.now(), 'a': 1, 'b': 2}, *self.TESTARGS)
+        doc_manager.mongo_dm.update({'_id': 1, 'now': datetime.datetime.now(), 'a': 1, 'b': 2}, *self.TESTARGS)
         doc_manager.mongo_dm.update({'_id': 1, 'now': datetime.datetime.now(), 'a': 3, 'b': 4}, *self.TESTARGS)
         doc_manager.mongo_dm.update({'_id': 1, '$set': {'a': 5, 'b': 6}}, *self.TESTARGS)
 

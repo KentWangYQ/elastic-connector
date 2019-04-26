@@ -1,12 +1,18 @@
-import uuid
 import threading
 import asyncio
 import elasticsearch_async
 from common.elasticsearch import async_helpers
+from common.elasticsearch.action_log import SVActionLogBlock, SVActionLogBlockStatus, GENESIS_BLOCK
+from common.elasticsearch.bson_serializer import BSONSerializer
 from . import constant
-from ..action_log import SVActionLogBlock, GENESIS_BLOCK
 from .doc_manager_base import DocManagerBase
 from .formatters import DefaultDocumentFormatter
+
+
+class ElasticOperate:
+    index = 'index'
+    update = 'update'
+    delete = 'delete'
 
 
 class DocManager(DocManagerBase):
@@ -15,8 +21,10 @@ class DocManager(DocManagerBase):
                  auto_commit_interval=constant.DEFAULT_COMMIT_INTERVAL,
                  unique_key='_id',
                  chunk_size=constant.DEFAULT_MAX_BULK,
-                 meta_index_name='mongodb_meta',
-                 meta_type='mongodb_meta',
+                 log_index='mongodb_log',
+                 log_type='mongodb_log',
+                 error_index='mongodb_error',
+                 error_type='mongodb_error',
                  attachment_field='content',
                  auto_commit=False,
                  **kwargs):
@@ -25,7 +33,7 @@ class DocManager(DocManagerBase):
             hosts = [hosts]
         self._es = elasticsearch_async.AsyncElasticsearch(hosts=hosts, **client_options)
         self._formatter = DefaultDocumentFormatter()  # todo 验证formatter
-        self.bulk_buffer = BulkBuffer(self)
+        self.bulk_buffer = BulkBuffer(self)  # todo 搞定prev_block
         self.look = threading.Lock()  # todo: 确认实际应用场景
 
         # auto_commit_interval < 0: do not commit automatically
@@ -36,8 +44,10 @@ class DocManager(DocManagerBase):
         # auto_send_interval = 0: send each request;
         # auto_send_interval > 0: auto send every auto_commit_interval seconds
         self.auto_send_interval = kwargs.get('auto_send_interval', constant.DEFAULT_SEND_INTERVAL)
-        self.meta_index_name = meta_index_name
-        self.meta_type = meta_type
+        self.log_index = log_index
+        self.log_type = log_type
+        self.error_index = error_index
+        self.error_type = error_type
         self.unique_key = unique_key
         self.chunk_size = chunk_size
         self.attachment_field = attachment_field
@@ -66,8 +76,9 @@ class DocManager(DocManagerBase):
         """
         index, doc_type = self._index_and_mapping(namespace)
         doc_id = str(doc.pop('_id'))
+        doc['doc_id'] = doc_id
 
-        _original_op_type = 'update' if is_update else 'index'
+        _original_op_type = ElasticOperate.update if is_update else ElasticOperate.index
         _op_type = _original_op_type
 
         doc = self._formatter.format_document(doc)
@@ -78,7 +89,8 @@ class DocManager(DocManagerBase):
             # 处理_op_type:
             # 1. (pre_op_type, _original_op_type)存在'index'，则为'index';
             # 2. 否则为'update'.
-            _op_type = 'index' if 'index' in (pre_action.get('_op_type'), _op_type) else _op_type
+            _op_type = ElasticOperate.index if (
+                    ElasticOperate.index in (pre_action.get('_op_type'), _op_type)) else _op_type
             # 合并doc
             doc = self.apply_update(pre_action.get('_source', {}), doc)
 
@@ -89,29 +101,23 @@ class DocManager(DocManagerBase):
             '_id': doc_id,
             '_source': doc
         }
+        action_log = {**{'ns': namespace,
+                         '_ts': timestamp,
+                         'op': _original_op_type
+                         },
+                      **doc}
+        self._push_to_buffer(action, action_log)
 
-        meta_action = {
-            '_index': self.meta_index_name,
-            '_type': self.meta_type,
-            '_source': {'ns': namespace,
-                        '_ts': timestamp,
-                        'op': _original_op_type,
-                        'doc_id': doc_id,
-                        'status': constant.ActionStatus.processing
-                        }
-        }
-        self._push_to_buffer(action, meta_action)
-
-    def _push_to_buffer(self, action, meta_action):
-        """Push action and meta_action to buffer
+    def _push_to_buffer(self, action, action_log):
+        """Push action and action_log to buffer
 
         If buffer size larger than chunk size, commit buffered actions to Elasticsearch
         :param action:
-        :param meta_action:
+        :param action_log:
         :return:
         """
         # push action to buffer
-        self.bulk_buffer.add_action(action, meta_action)
+        self.bulk_buffer.add_action(action, action_log)
 
         #
         if self.bulk_buffer.count() >= self.chunk_size or self.auto_commit_interval == 0:
@@ -147,24 +153,21 @@ class DocManager(DocManagerBase):
         :return:
         """
         index, doc_type = self._index_and_mapping(namespace)
+        _op_type = 'delete'
         action = {
-            '_op_type': 'delete',
+            '_op_type': _op_type,
             '_index': index,
             '_type': doc_type,
             '_id': doc_id
         }
 
-        meta_action = {
-            '_index': self.meta_index_name,
-            '_type': self.meta_type,
-            '_source': {'ns': namespace,
-                        '_ts': timestamp,
-                        'op': 'delete',
-                        'doc_id': doc_id,
-                        'status': constant.ActionStatus.processing
-                        }
+        action_log = {
+            'ns': namespace,
+            '_ts': timestamp,
+            'op': _op_type,
+            'doc_id': doc_id
         }
-        self._push_to_buffer(action, meta_action)
+        self._push_to_buffer(action, action_log)
 
     def bulk_upsert(self):
         """
@@ -176,13 +179,63 @@ class DocManager(DocManagerBase):
     async def send_buffered_actions(self):
         """Send buffered actions to Elasticsearch"""
         if self.bulk_buffer.count() > 0:
-            action_buffer, chunk_id = self.bulk_buffer.get_buffer()
-            coro = async_helpers.bulk(client=self._es, actions=action_buffer, max_retries=3, initial_backoff=0.1,
-                                      max_backoff=1)
-            succeed, failed = await asyncio.ensure_future(coro)
+            # get action buffer and operate log block
+            action_buffer, action_log_block = self.bulk_buffer.get_buffer()
+
+            # coroutine for index log block
+            # todo: use es helper which support retry
+            logs_future = self._send_action_log_block(action_log_block)
+            # coroutine for bulk actions
+            actions_future = asyncio.ensure_future(
+                async_helpers.bulk(client=self._es, actions=action_buffer, max_retries=3,
+                                   initial_backoff=0.1,
+                                   max_backoff=1))
+            # wait for coro complete
+            await asyncio.wait([logs_future, actions_future])
+
+            # bulk result which is a tuple for succeed and failed actions: (succeed, failed)
+            succeed, failed = actions_future.result()
             print('succeed:', len(succeed), 'failed:', len(failed))
             print(succeed, failed)
-            # todo: 持久化记录
+
+            # commit log block result
+            await self._commit_log(action_log_block, failed)
+
+            # todo: 记录 failed
+
+    def _send_action_log_block(self, block):
+        action_log = {
+            '_op_type': ElasticOperate.index,
+            '_index': self.log_index,
+            '_type': self.log_type,
+            '_id': block.id,
+            '_source': block.to_dict()
+        }
+        return asyncio.ensure_future(async_helpers.bulk(client=self._es, actions=[action_log], max_retries=3,
+                                                        initial_backoff=0.1,
+                                                        max_backoff=1))
+
+    def _commit_log(self, block, failed):
+        def _emf(info):
+            return {
+                '_op_type': ElasticOperate.index,
+                '_index': self.error_index,
+                '_type': self.error_type,
+                '_source': info
+            }
+
+        log_commit = {
+            '_op_type': ElasticOperate.update,
+            '_index': self.log_index,
+            '_type': self.log_type,
+            '_id': block.id,
+            '_source': {'doc': {'status': SVActionLogBlockStatus.done}}
+        }
+        actions = [log_commit]
+        actions.extend(map(_emf, failed))
+        return asyncio.ensure_future(async_helpers.bulk(client=self._es, actions=actions, max_retries=3,
+                                                        initial_backoff=0.1,
+                                                        max_backoff=1))
 
     async def commit(self):
         """Send bulk buffer to Elasticsearch, then refresh."""
@@ -227,37 +280,38 @@ class AutoCommitter:
 
 
 class BulkBuffer:
-    def __init__(self, docman):
+    def __init__(self, docman, prev_block=GENESIS_BLOCK):
         self.docman = docman  # doc manager
         self.action_buffer = {}  # Action buffer for bulk indexing
         self.action_logs = []  # Action log for ES operation
         self._i = -1  # priority for action
+        self._sv_block_chain = SVBlockChain(head=prev_block)
 
     def _get_i(self):
         # todo: 多进程需要加锁
         self._i += 1
         return self._i
 
-    def _gen_block_id(self):
-        return uuid.uuid1()
+    def count(self):
+        return len(self.action_buffer)
 
-    def add_action(self, action, meta_action):
+    def add_action(self, action, action_log):
         """
         兼容
         :param action:
-        :param meta_action:
+        :param action_log:
         :return:
         """
-        self.bulk_index(action, meta_action)
+        self.bulk_index(action, action_log)
 
     def get_action(self, _id):
         return self.action_buffer.get(_id)
 
-    def bulk_index(self, action, meta_action):
+    def bulk_index(self, action, action_log):
         action['_i'] = self._get_i()
 
         self.action_buffer[str(action.get('_id'))] = action
-        self.action_logs.append(meta_action)
+        self.action_logs.append(action_log)
 
     def reset_action(self, _id):
         self.action_buffer[_id] = {}
@@ -267,20 +321,21 @@ class BulkBuffer:
         self.action_logs = []
 
     def get_buffer(self):
-        _block_id = self._gen_block_id()
-        _actions = sorted(self.action_buffer.values(), key=lambda ac: ac['_id'])
-        _logs_block = SVActionLogBlock(_block_id, None, None, self.action_logs[0], self.action_logs[-1],
-                                       len(self.action_logs))
-        self.clean_up()
-        return _actions, _logs_block, _block_id
+        if self.action_buffer:
+            _actions = sorted(self.action_buffer.values(), key=lambda ac: ac['_id'])
+            _logs_block = self._sv_block_chain.gen_block(actions=self.action_logs)
+            self.clean_up()
+            return _actions, _logs_block
+        return [], None
 
-    def get_action_logs(self):
-        if self.action_logs:
-            i = 0
-            while True:
-                if self.action_logs[0]['status'] == constant.ActionStatus.processing:
-                    break
-                yield self.action_logs.pop(0)
-                i += 1
-                if i >= chunk_size:
-                    break
+
+class SVBlockChain:
+    def __init__(self, head):
+        self.head = head
+        self.prev = head
+        self.current = head
+
+    def gen_block(self, actions):
+        svb = SVActionLogBlock(prev_block_hash=self.prev.id, actions=actions, serializer=BSONSerializer())
+        self.prev, self.current = self.current, svb
+        return svb

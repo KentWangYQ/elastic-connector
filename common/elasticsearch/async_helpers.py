@@ -131,7 +131,8 @@ async def bulk(client, actions, chunk_size=500, max_chunk_bytes=100 * 1024 * 102
 
     :arg client: instance of :class:`~elasticsearch.Elasticsearch` to use
     :arg actions: iterable containing the actions to be executed
-        ex: {'_op_type': 'index', '_index': 'rts_test', '_type': 'rt', '_id': 1, 'now': datetime.datetime.now()},
+        ex: {'_op_type': 'index', '_index': 'rts_test', '_type': 'rt', '_id': 1,
+            _source:{'now': datetime.datetime.now()}},
     :arg chunk_size: number of docs in one chunk sent to es (default: 500)
     :arg max_chunk_bytes: the maximum size of the request in bytes (default: 100MB)
     :arg expand_action_callback: callback executed on each action passed in,
