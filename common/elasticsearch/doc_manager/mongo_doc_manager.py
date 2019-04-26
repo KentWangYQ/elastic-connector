@@ -65,6 +65,29 @@ class DocManager(DocManagerBase):
         index, doc_type = namespace.lower().split('.', 1)
         return index, doc_type
 
+    def _action_merge(self, pre_action, original_action):
+        if pre_action:
+            # 处理_op_type:
+            # 1. (pre_op_type, _original_op_type)存在'index'，则为'index';
+            # 2. 否则为'update'.
+            p_op_type = pre_action.get('_op_type')
+            o_op_type = original_action.get('_op_type')
+            _op_type = ElasticOperate.index if (ElasticOperate.index in (p_op_type, o_op_type)) else o_op_type
+            p_doc = pre_action.get('_source', {}).get('doc', {}) \
+                if p_op_type == ElasticOperate.update else pre_action.get('_source', {})
+            o_doc = original_action.get('_source', {})
+            # 合并doc
+            _source = self.apply_update(p_doc, o_doc)
+            _source = {'doc': _source} if _op_type == ElasticOperate.update else _source
+
+            original_action['_op_type'] = _op_type
+            original_action['_source'] = _source
+        else:
+            if original_action.get('_op_type') == ElasticOperate.update:
+                original_action['_source'] = {'doc': original_action.get('_source')}
+
+        return original_action
+
     def _upsert(self, doc, namespace, timestamp, is_update=False):
         """
         index or update document
@@ -85,22 +108,14 @@ class DocManager(DocManagerBase):
 
         pre_action = self.bulk_buffer.get_action(doc_id)
 
-        if pre_action:
-            # 处理_op_type:
-            # 1. (pre_op_type, _original_op_type)存在'index'，则为'index';
-            # 2. 否则为'update'.
-            _op_type = ElasticOperate.index if (
-                    ElasticOperate.index in (pre_action.get('_op_type'), _op_type)) else _op_type
-            # 合并doc
-            doc = self.apply_update(pre_action.get('_source', {}), doc)
-
-        action = {
+        action = self._action_merge(pre_action, {
             '_op_type': _op_type,
             '_index': index,
             '_type': doc_type,
             '_id': doc_id,
             '_source': doc
-        }
+        })
+
         action_log = {**{'ns': namespace,
                          '_ts': timestamp,
                          'op': _original_op_type
@@ -200,8 +215,6 @@ class DocManager(DocManagerBase):
 
             # commit log block result
             await self._commit_log(action_log_block, failed)
-
-            # todo: 记录 failed
 
     def _send_action_log_block(self, block):
         action_log = {
@@ -310,6 +323,7 @@ class BulkBuffer:
     def bulk_index(self, action, action_log):
         action['_i'] = self._get_i()
 
+        # depend on unique _id
         self.action_buffer[str(action.get('_id'))] = action
         self.action_logs.append(action_log)
 

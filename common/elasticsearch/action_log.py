@@ -30,7 +30,7 @@ class ActionLogBlock:
     def __init__(self,
                  prev_block_hash,
                  actions,
-                 time=util.utc_now_timestamp_ms(),  # todo: 处理成时间格式
+                 time=util.utc_now(),
                  serializer=JSONSerializer()):
         self._serializer = serializer
         self.prev_block_hash = prev_block_hash
@@ -78,7 +78,7 @@ class SVActionLogBlock(ActionLogBlock):
     def __init__(self,
                  prev_block_hash,
                  actions,
-                 time=util.utc_now_timestamp_ms(),
+                 time=util.utc_now(),
                  status=SVActionLogBlockStatus.processing,
                  serializer=JSONSerializer()):
         super().__init__(prev_block_hash=prev_block_hash, time=time, actions=actions, serializer=serializer)

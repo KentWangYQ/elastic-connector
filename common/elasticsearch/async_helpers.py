@@ -3,6 +3,7 @@ from operator import methodcaller
 from elasticsearch_async import AsyncElasticsearch
 from elasticsearch.helpers import expand_action
 from elasticsearch.exceptions import *
+from common import util
 
 NO_RETRY_EXCEPTIONS = [SSLError, NotFoundError, AuthenticationException, AuthorizationException]
 
@@ -88,7 +89,7 @@ async def _process_bulk_chunk(client: AsyncElasticsearch,
                 for data in bulk_data:
                     # collect all the information about failed actions
                     op_type, action = data[0].copy().popitem()
-                    info = {"error": err_message, "status": e.status_code, "exception": e}
+                    info = {"error": err_message, "status": e.status_code, "create_time": util.utc_now()}
                     if op_type != 'delete':
                         info['data'] = data[1]
                     info['action'] = action
@@ -96,13 +97,21 @@ async def _process_bulk_chunk(client: AsyncElasticsearch,
         else:
             to_retry, to_retry_data = [], []
             # go through request-response pairs and detect failures
-            for data, (ok, info) in zip(bulk_data, _chunk_result(bulk_data, result)):
-                action, info = info.popitem()
-                if not ok and attempted < max_retries:
-                    # _process_bulk_chunk expects strings so we need to
-                    # re-serialize the data
-                    to_retry.extend(map(client.transport.serializer.dumps, data))
-                    to_retry_data.append(data)
+            for (action, data), (ok, info) in zip(bulk_data, _chunk_result(bulk_data, result)):
+                op, info = info.popitem()
+                if not ok:
+                    if attempted < max_retries:
+                        to_retry.extend(map(client.transport.serializer.dumps, (action, data)))
+                        to_retry_data.append((action, data))
+                    else:
+                        info = {
+                            'error': str(info.get('error')),
+                            'status': info.get('status'),
+                            'action': action,
+                            'data': data,
+                            'create_time': util.utc_now()
+                        }
+                        failed.append(info)
                 else:
                     # succeed or max retry
                     succeed.append(info)

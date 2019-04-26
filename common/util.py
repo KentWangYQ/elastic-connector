@@ -1,5 +1,5 @@
 from datetime import datetime
 
 
-def utc_now_timestamp_ms():
+def utc_now():
     return datetime.utcnow()
