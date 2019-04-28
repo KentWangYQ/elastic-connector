@@ -4,6 +4,7 @@ import elasticsearch_async
 from common.elasticsearch import async_helpers
 from common.elasticsearch.action_log import SVActionLogBlock, SVActionLogBlockStatus, GENESIS_BLOCK
 from common.elasticsearch.bson_serializer import BSONSerializer
+from common import util
 from . import constant
 from .doc_manager_base import DocManagerBase
 from .formatters import DefaultDocumentFormatter
@@ -33,7 +34,8 @@ class DocManager(DocManagerBase):
             hosts = [hosts]
         self._es = elasticsearch_async.AsyncElasticsearch(hosts=hosts, **client_options)
         self._formatter = DefaultDocumentFormatter()  # todo 验证formatter
-        self.bulk_buffer = BulkBuffer(self)  # todo 搞定prev_block
+        self.chunk_size = chunk_size
+        self.bulk_buffer = BulkBuffer(self, self.chunk_size)  # todo 搞定prev_block
         self.look = threading.Lock()  # todo: 确认实际应用场景
 
         # auto_commit_interval < 0: do not commit automatically
@@ -49,7 +51,6 @@ class DocManager(DocManagerBase):
         self.error_index = error_index
         self.error_type = error_type
         self.unique_key = unique_key
-        self.chunk_size = chunk_size
         self.attachment_field = attachment_field
         self.auto_committer = AutoCommitter(self, self.auto_send_interval, self.auto_commit_interval)
         if auto_commit:
@@ -88,7 +89,7 @@ class DocManager(DocManagerBase):
 
         return original_action
 
-    def _upsert(self, doc, namespace, timestamp, is_update=False):
+    def _upsert(self, doc, namespace, timestamp=util.utc_now(), is_update=False):
         """
         index or update document
         :param doc: native object
@@ -117,7 +118,7 @@ class DocManager(DocManagerBase):
         })
 
         action_log = {**{'ns': namespace,
-                         '_ts': timestamp,
+                         'ts': timestamp,
                          'op': _original_op_type
                          },
                       **doc}
@@ -135,11 +136,12 @@ class DocManager(DocManagerBase):
         self.bulk_buffer.add_action(action, action_log)
 
         #
-        if self.bulk_buffer.count() >= self.chunk_size or self.auto_commit_interval == 0:
+        if self.bulk_buffer.blocks or self.auto_commit_interval == 0:
             # commit
+            self.auto_committer.skip_next()
             self.commit()
 
-    def index(self, doc, namespace, timestamp):
+    def index(self, doc, namespace, timestamp=util.utc_now()):
         """
         Index document
         :param doc:
@@ -149,7 +151,7 @@ class DocManager(DocManagerBase):
         """
         self._upsert(doc, namespace, timestamp)
 
-    def update(self, doc, namespace, timestamp):
+    def update(self, doc, namespace, timestamp=util.utc_now()):
         """
         Update document
         :param doc:
@@ -178,7 +180,7 @@ class DocManager(DocManagerBase):
 
         action_log = {
             'ns': namespace,
-            '_ts': timestamp,
+            'ts': timestamp,
             'op': _op_type,
             'doc_id': doc_id
         }
@@ -191,30 +193,34 @@ class DocManager(DocManagerBase):
         """
         raise NotImplementedError()
 
-    async def send_buffered_actions(self):
+    async def _send_buffered_actions(self, action_buffer, action_log_block, refresh=False):
         """Send buffered actions to Elasticsearch"""
-        if self.bulk_buffer.count() > 0:
-            # get action buffer and operate log block
-            action_buffer, action_log_block = self.bulk_buffer.get_buffer()
+        # future for index log block
+        logs_future = self._send_action_log_block(action_log_block)
+        # future for bulk actions
+        actions_future = asyncio.ensure_future(
+            async_helpers.bulk(client=self._es, actions=action_buffer, max_retries=3,
+                               initial_backoff=0.1,
+                               max_backoff=1))
+        # wait for futures complete
+        await asyncio.wait([logs_future, actions_future])
 
-            # coroutine for index log block
-            # todo: use es helper which support retry
-            logs_future = self._send_action_log_block(action_log_block)
-            # coroutine for bulk actions
-            actions_future = asyncio.ensure_future(
-                async_helpers.bulk(client=self._es, actions=action_buffer, max_retries=3,
-                                   initial_backoff=0.1,
-                                   max_backoff=1))
-            # wait for coro complete
-            await asyncio.wait([logs_future, actions_future])
+        # bulk result which is a tuple for succeed and failed actions: (succeed, failed)
+        succeed, failed = actions_future.result()
+        print('succeed:', len(succeed), 'failed:', len(failed))
+        # print(succeed, failed)
 
-            # bulk result which is a tuple for succeed and failed actions: (succeed, failed)
-            succeed, failed = actions_future.result()
-            print('succeed:', len(succeed), 'failed:', len(failed))
-            print(succeed, failed)
+        # commit log block result
+        await self._commit_log(action_log_block, failed)
+        if refresh:
+            await self._es.indices.refresh()
 
-            # commit log block result
-            await self._commit_log(action_log_block, failed)
+    def send_buffered_actions(self, refresh=False):
+        # get action buffer and operate log block
+        action_buffer, action_log_block = self.bulk_buffer.get_block()
+
+        if action_buffer and action_log_block:
+            asyncio.ensure_future(self._send_buffered_actions(action_buffer, action_log_block, refresh))
 
     def _send_action_log_block(self, block):
         action_log = {
@@ -250,16 +256,19 @@ class DocManager(DocManagerBase):
                                                         initial_backoff=0.1,
                                                         max_backoff=1))
 
-    async def commit(self):
+    def commit(self):
         """Send bulk buffer to Elasticsearch, then refresh."""
         # send
-        await self.send_buffered_actions()
-        # commit
-        await self._es.indices.refresh()
+        self.send_buffered_actions(refresh=True)
 
     async def stop(self):
         """Stop auto committer"""
         await self.auto_committer.stop()
+        await asyncio.sleep(5)
+        # all_tasks = asyncio.all_tasks(asyncio.get_event_loop())
+        # await asyncio.wait(all_tasks)
+        await self._es.transport.close()
+        await asyncio.sleep(1)
 
     def handle_command(self, command_doc, namespace, timestamp):
         raise NotImplementedError()
@@ -277,26 +286,33 @@ class AutoCommitter:
         self._auto_commit = self._commit_interval > 0
         self._sleep_interval = sleep_interval
         self._stopped = False
+        self._skip_next = False
 
     async def run(self):
         while not self._stopped:
-            if self._auto_commit:
-                await self.docman.commit()
+            if not self._skip_next:
+                if self._auto_commit:
+                    self.docman.commit()
 
-            elif self._auto_send:
-                await self.docman.send_buffered_actions()
-
+                elif self._auto_send:
+                    self.docman.send_buffered_actions()
+            self._skip_next = True
             await asyncio.sleep(self._sleep_interval)
 
     async def stop(self):
         self._stopped = True
 
+    def skip_next(self):
+        self._skip_next = True
+
 
 class BulkBuffer:
-    def __init__(self, docman, prev_block=GENESIS_BLOCK):
+    def __init__(self, docman, max_block_size, prev_block=GENESIS_BLOCK):
         self.docman = docman  # doc manager
+        self.max_block_size = max_block_size
         self.action_buffer = {}  # Action buffer for bulk indexing
         self.action_logs = []  # Action log for ES operation
+        self.blocks = []
         self._i = -1  # priority for action
         self._sv_block_chain = SVBlockChain(head=prev_block)
 
@@ -327,6 +343,9 @@ class BulkBuffer:
         self.action_buffer[str(action.get('_id'))] = action
         self.action_logs.append(action_log)
 
+        if self.count() >= self.max_block_size:
+            self.blocks.append(self.get_buffer())
+
     def reset_action(self, _id):
         self.action_buffer[_id] = {}
 
@@ -335,11 +354,18 @@ class BulkBuffer:
         self.action_logs = []
 
     def get_buffer(self):
+        if self.blocks:
+            return self.get_block()
         if self.action_buffer:
             _actions = sorted(self.action_buffer.values(), key=lambda ac: ac['_id'])
             _logs_block = self._sv_block_chain.gen_block(actions=self.action_logs)
             self.clean_up()
             return _actions, _logs_block
+        return [], None
+
+    def get_block(self):
+        if self.blocks:
+            return self.blocks.pop(0)
         return [], None
 
 
@@ -353,3 +379,9 @@ class SVBlockChain:
         svb = SVActionLogBlock(prev_block_hash=self.prev.id, actions=actions, serializer=BSONSerializer())
         self.prev, self.current = self.current, svb
         return svb
+
+
+class Recovery:
+    """Recovery from service termination"""
+    # todo: 从es log读取状态不为done的block, 逐个进行恢复
+    pass

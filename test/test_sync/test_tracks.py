@@ -2,7 +2,7 @@ import unittest
 import asyncio
 import datetime
 
-from common.elasticsearch import doc_manager
+from common.elasticsearch.doc_manager import mongo_docman
 from module.sync import tracks
 
 
@@ -11,7 +11,8 @@ class TracksTest(unittest.TestCase):
         now = datetime.datetime.now()
         loop = asyncio.get_event_loop()
         loop.run_until_complete(tracks.impression_track.index_all())
+        loop.run_until_complete(mongo_docman.stop())
         print('time used:', datetime.datetime.now() - now)
-        loop.run_until_complete(doc_manager.mongo_doc_manager._es.transport.close())
-        loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(loop)))
+        # loop.run_until_complete(asyncio.sleep(5))
+        # loop.run_until_complete(asyncio.wait(asyncio.all_tasks(loop)))
         loop.close()

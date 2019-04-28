@@ -62,7 +62,6 @@ async def _process_bulk_chunk(client: AsyncElasticsearch,
                               max_retries,
                               initial_backoff,
                               max_backoff,
-                              bulk_timeout=30,
                               **kwargs):
     """
     Send a bulk request to elasticsearch and process the output, it will retry when exception raised.
@@ -76,7 +75,7 @@ async def _process_bulk_chunk(client: AsyncElasticsearch,
 
         # if raise on error is set, we need to collect errors per chunk before raising them
         try:
-            result = await asyncio.wait_for(future, bulk_timeout)
+            result = await future
         except asyncio.TimeoutError:
             # retry
             pass
@@ -94,6 +93,8 @@ async def _process_bulk_chunk(client: AsyncElasticsearch,
                         info['data'] = data[1]
                     info['action'] = action
                     failed.append(info)
+        except Exception as e:
+            print(e)
         else:
             to_retry, to_retry_data = [], []
             # go through request-response pairs and detect failures

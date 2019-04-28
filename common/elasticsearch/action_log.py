@@ -88,7 +88,6 @@ class SVActionLogBlock(ActionLogBlock):
         # Simple verify block do NOT has merkle_tree and actions
         self.merkle_tree = None
         self.actions = []
-        self.actions_count = 0
         self.status = status
 
     def to_dict(self):
