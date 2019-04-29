@@ -22,8 +22,8 @@ class DocManager(DocManagerBase):
                  auto_commit_interval=constant.DEFAULT_COMMIT_INTERVAL,
                  unique_key='_id',
                  chunk_size=constant.DEFAULT_MAX_BULK,
-                 log_index='mongodb_log',
-                 log_type='mongodb_log',
+                 log_index='mongodb_log_block',
+                 log_type='mongodb_log_block',
                  error_index='mongodb_error',
                  error_type='mongodb_error',
                  attachment_field='content',
@@ -32,7 +32,7 @@ class DocManager(DocManagerBase):
         client_options = kwargs.get('client_options')
         if type(hosts) is not list:
             hosts = [hosts]
-        self._es = elasticsearch_async.AsyncElasticsearch(hosts=hosts, **client_options)
+        self.es = elasticsearch_async.AsyncElasticsearch(hosts=hosts, **client_options)
         self._formatter = DefaultDocumentFormatter()  # todo 验证formatter
         self.chunk_size = chunk_size
         self.bulk_buffer = BulkBuffer(self, self.chunk_size)  # todo 搞定prev_block
@@ -199,7 +199,7 @@ class DocManager(DocManagerBase):
         logs_future = self._send_action_log_block(action_log_block)
         # future for bulk actions
         actions_future = asyncio.ensure_future(
-            async_helpers.bulk(client=self._es, actions=action_buffer, max_retries=3,
+            async_helpers.bulk(client=self.es, actions=action_buffer, max_retries=3,
                                initial_backoff=0.1,
                                max_backoff=1))
         # wait for futures complete
@@ -213,7 +213,7 @@ class DocManager(DocManagerBase):
         # commit log block result
         await self._commit_log(action_log_block, failed)
         if refresh:
-            await self._es.indices.refresh()
+            await self.es.indices.refresh()
 
     def send_buffered_actions(self, refresh=False):
         # get action buffer and operate log block
@@ -230,7 +230,7 @@ class DocManager(DocManagerBase):
             '_id': block.id,
             '_source': block.to_dict()
         }
-        return asyncio.ensure_future(async_helpers.bulk(client=self._es, actions=[action_log], max_retries=3,
+        return asyncio.ensure_future(async_helpers.bulk(client=self.es, actions=[action_log], max_retries=3,
                                                         initial_backoff=0.1,
                                                         max_backoff=1))
 
@@ -252,7 +252,7 @@ class DocManager(DocManagerBase):
         }
         actions = [log_commit]
         actions.extend(map(_emf, failed))
-        return asyncio.ensure_future(async_helpers.bulk(client=self._es, actions=actions, max_retries=3,
+        return asyncio.ensure_future(async_helpers.bulk(client=self.es, actions=actions, max_retries=3,
                                                         initial_backoff=0.1,
                                                         max_backoff=1))
 
@@ -267,7 +267,7 @@ class DocManager(DocManagerBase):
         await asyncio.sleep(5)
         # all_tasks = asyncio.all_tasks(asyncio.get_event_loop())
         # await asyncio.wait(all_tasks)
-        await self._es.transport.close()
+        await self.es.transport.close()
         await asyncio.sleep(1)
 
     def handle_command(self, command_doc, namespace, timestamp):
@@ -307,14 +307,14 @@ class AutoCommitter:
 
 
 class BulkBuffer:
-    def __init__(self, docman, max_block_size, prev_block=GENESIS_BLOCK):
+    def __init__(self, docman, max_block_size):
         self.docman = docman  # doc manager
         self.max_block_size = max_block_size
         self.action_buffer = {}  # Action buffer for bulk indexing
         self.action_logs = []  # Action log for ES operation
         self.blocks = []
         self._i = -1  # priority for action
-        self._sv_block_chain = SVBlockChain(head=prev_block)
+        self._sv_block_chain = SVBlockChain(docman=self.docman)
 
     def _get_i(self):
         # todo: 多进程需要加锁
@@ -370,15 +370,81 @@ class BulkBuffer:
 
 
 class SVBlockChain:
-    def __init__(self, head):
-        self.head = head
-        self.prev = head
-        self.current = head
+    def __init__(self, docman: DocManager, serializer=BSONSerializer):
+        self.docman = docman
+        self.serializer = serializer
+        block = self._get_last_block()
+        self.head, self.prev, self.current = (block,) * 3
 
     def gen_block(self, actions):
-        svb = SVActionLogBlock(prev_block_hash=self.prev.id, actions=actions, serializer=BSONSerializer())
+        svb = SVActionLogBlock(prev_block_hash=self.prev.id, actions=actions, serializer=self.serializer)
         self.prev, self.current = self.current, svb
         return svb
+
+    async def _get_processing_block(self):
+        body = {
+            "size": 10000,
+            "_source": [
+                "first_action.ts.$date",
+                "last_action.ts.$date"
+            ],
+            "query": {
+                "term": {
+                    "status.keyword": {
+                        "value": SVActionLogBlockStatus.processing
+                    }
+                }
+            },
+            "sort": [
+                {
+                    "create_time.$date": {
+                        "order": "desc"
+                    }
+                }
+            ]
+        }
+        result = await self.docman.es.search(index=self.docman.log_index, doc_type=self.docman.log_type, body=body)
+        blocks = []
+        for r in result.get('hits').get('hits'):
+            blocks.append(self._gen_sv_block_from_dict(r.get('_source')))
+
+        return blocks
+
+    async def _get_last_block(self):
+        body = {
+            "size": 1,
+            "sort": [
+                {
+                    "create_time.$date": {
+                        "order": "desc"
+                    }
+                }
+            ]
+        }
+        result = await self.docman.es.search(index=self.docman.log_type, doc_type=self.docman.log_type, body=body)
+        block = GENESIS_BLOCK
+        if result.get('hits').get('total') > 0:
+            block = self._gen_sv_block_from_dict(result.get('hits').get('hits')[0].get('_source'))
+        return block
+
+    def _gen_sv_block_from_dict(self, obj):
+        block = SVActionLogBlock(prev_block_hash=obj.get('prev_block_hash'),
+                                 actions=obj.get('actions'),
+                                 create_time=obj.get('create_time'),
+                                 status=obj.get('status'),
+                                 serializer=self.serializer)
+        if 'id' in obj:
+            block.id = obj.get('id')
+        if 'merkle_root_hash' in obj:
+            block.merkle_root_hash = obj.get('merkle_root_hash')
+        if 'actions_count' in obj:
+            block.actions_count = obj.get('actions_count')
+        if 'first_action' in obj:
+            block.first_action = obj.get('first_action')
+        if 'last_action' in obj:
+            block.last_action = obj.get('last_action')
+
+        return block
 
 
 class Recovery:
