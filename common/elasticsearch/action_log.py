@@ -84,8 +84,9 @@ class SVActionLogBlock(ActionLogBlock):
                  serializer=JSONSerializer()):
         super().__init__(prev_block_hash=prev_block_hash, create_time=create_time, actions=actions,
                          serializer=serializer)
-        self.first_action = actions[0]
-        self.last_action = actions[-1]
+        if self.actions_count>0:
+            self.first_action = actions[0]
+            self.last_action = actions[-1]
 
         # Simple verify block do NOT has merkle_tree and actions
         self.merkle_tree = None

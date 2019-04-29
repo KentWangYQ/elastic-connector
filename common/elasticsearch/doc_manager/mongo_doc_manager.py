@@ -1,5 +1,6 @@
 import threading
 import asyncio
+import elasticsearch
 import elasticsearch_async
 from common.elasticsearch import async_helpers
 from common.elasticsearch.action_log import SVActionLogBlock, SVActionLogBlockStatus, GENESIS_BLOCK
@@ -32,10 +33,10 @@ class DocManager(DocManagerBase):
         client_options = kwargs.get('client_options')
         if type(hosts) is not list:
             hosts = [hosts]
+        self.es_sync = elasticsearch.Elasticsearch(hosts=hosts, **client_options)
         self.es = elasticsearch_async.AsyncElasticsearch(hosts=hosts, **client_options)
         self._formatter = DefaultDocumentFormatter()  # todo 验证formatter
         self.chunk_size = chunk_size
-        self.bulk_buffer = BulkBuffer(self, self.chunk_size)  # todo 搞定prev_block
         self.look = threading.Lock()  # todo: 确认实际应用场景
 
         # auto_commit_interval < 0: do not commit automatically
@@ -52,6 +53,11 @@ class DocManager(DocManagerBase):
         self.error_type = error_type
         self.unique_key = unique_key
         self.attachment_field = attachment_field
+
+        self.log_block_chain = SVBlockChain(self)  # todo: block chain保存有processing的blocks, 需要先recovery.
+
+        self.bulk_buffer = BulkBuffer(self, self.chunk_size)
+
         self.auto_committer = AutoCommitter(self, self.auto_send_interval, self.auto_commit_interval)
         if auto_commit:
             asyncio.ensure_future(self.auto_committer.run())
@@ -314,7 +320,6 @@ class BulkBuffer:
         self.action_logs = []  # Action log for ES operation
         self.blocks = []
         self._i = -1  # priority for action
-        self._sv_block_chain = SVBlockChain(docman=self.docman)
 
     def _get_i(self):
         # todo: 多进程需要加锁
@@ -358,7 +363,7 @@ class BulkBuffer:
             return self.get_block()
         if self.action_buffer:
             _actions = sorted(self.action_buffer.values(), key=lambda ac: ac['_id'])
-            _logs_block = self._sv_block_chain.gen_block(actions=self.action_logs)
+            _logs_block = self.docman.log_block_chain.gen_block(actions=self.action_logs)
             self.clean_up()
             return _actions, _logs_block
         return [], None
@@ -377,11 +382,12 @@ class SVBlockChain:
         self.head, self.prev, self.current = (block,) * 3
 
     def gen_block(self, actions):
+        # The create_time of log block can be the order of blocks
         svb = SVActionLogBlock(prev_block_hash=self.prev.id, actions=actions, serializer=self.serializer)
         self.prev, self.current = self.current, svb
         return svb
 
-    async def _get_processing_block(self):
+    def get_processing_block(self):
         body = {
             "size": 10000,
             "_source": [
@@ -403,14 +409,15 @@ class SVBlockChain:
                 }
             ]
         }
-        result = await self.docman.es.search(index=self.docman.log_index, doc_type=self.docman.log_type, body=body)
+        result = self.docman.es_sync.search(index=self.docman.log_index, doc_type=self.docman.log_type, body=body)
         blocks = []
         for r in result.get('hits').get('hits'):
             blocks.append(self._gen_sv_block_from_dict(r.get('_source')))
 
         return blocks
 
-    async def _get_last_block(self):
+    def _get_last_block(self):
+        # todo: 使用同步方法
         body = {
             "size": 1,
             "sort": [
@@ -421,7 +428,7 @@ class SVBlockChain:
                 }
             ]
         }
-        result = await self.docman.es.search(index=self.docman.log_type, doc_type=self.docman.log_type, body=body)
+        result = self.docman.es_sync.search(index=self.docman.log_index, doc_type=self.docman.log_type, body=body)
         block = GENESIS_BLOCK
         if result.get('hits').get('total') > 0:
             block = self._gen_sv_block_from_dict(result.get('hits').get('hits')[0].get('_source'))
