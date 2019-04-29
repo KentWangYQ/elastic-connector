@@ -375,6 +375,7 @@ class BulkBuffer:
 
 
 class SVBlockChain:
+    # todo: 验证使用完成block的性能，因为recovery时依赖actions
     def __init__(self, docman: DocManager, serializer=BSONSerializer):
         self.docman = docman
         self.serializer = serializer
