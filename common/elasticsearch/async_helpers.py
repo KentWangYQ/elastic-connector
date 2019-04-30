@@ -76,9 +76,6 @@ async def _process_bulk_chunk(client: AsyncElasticsearch,
         # if raise on error is set, we need to collect errors per chunk before raising them
         try:
             result = await future
-        except asyncio.TimeoutError:
-            # retry
-            pass
         except TransportError as e:
             # todo: process error 429
             if type(e) in NO_RETRY_EXCEPTIONS or attempted > max_retries:
@@ -94,7 +91,18 @@ async def _process_bulk_chunk(client: AsyncElasticsearch,
                     info['action'] = action
                     failed.append(info)
         except Exception as e:
-            print(e)
+            if attempted > max_retries:
+                # if we are not propagating, mark all actions in current chunk as failed
+                err_message = str(e)
+
+                for data in bulk_data:
+                    # collect all the information about failed actions
+                    op_type, action = data[0].copy().popitem()
+                    info = {"error": err_message, "status": 500, "create_time": util.utc_now()}
+                    if op_type != 'delete':
+                        info['data'] = data[1]
+                    info['action'] = action
+                    failed.append(info)
         else:
             to_retry, to_retry_data = [], []
             # go through request-response pairs and detect failures

@@ -21,7 +21,7 @@ class JSONSerializer(object):
         return json.dumps(data)
 
 
-class SVActionLogBlockStatus:
+class ActionLogBlockStatus:
     processing = 'processing'
     done = 'done'
 
@@ -31,11 +31,13 @@ class ActionLogBlock:
                  prev_block_hash,
                  actions,
                  create_time=util.utc_now(),
+                 status=ActionLogBlockStatus.processing,
                  serializer=JSONSerializer()):
         self._serializer = serializer
         self.prev_block_hash = prev_block_hash
         # unix timestamp, 13 bytes
         self.create_time = create_time
+        self.status = status
         self.actions = actions
         self.actions_count = len(self.actions)
         # Merkle tree for actions
@@ -66,7 +68,8 @@ class ActionLogBlock:
             'create_time': self.create_time,
             'actions': self.actions,
             'actions_count': self.actions_count,
-            'merkle_root_hash': self.merkle_root_hash
+            'merkle_root_hash': self.merkle_root_hash,
+            'status': self.status
         }
 
 
@@ -80,11 +83,14 @@ class SVActionLogBlock(ActionLogBlock):
                  prev_block_hash,
                  actions,
                  create_time=util.utc_now(),
-                 status=SVActionLogBlockStatus.processing,
+                 status=ActionLogBlockStatus.processing,
                  serializer=JSONSerializer()):
-        super().__init__(prev_block_hash=prev_block_hash, create_time=create_time, actions=actions,
+        super().__init__(prev_block_hash=prev_block_hash,
+                         create_time=create_time,
+                         status=status,
+                         actions=actions,
                          serializer=serializer)
-        if self.actions_count>0:
+        if self.actions_count > 0:
             self.first_action = actions[0]
             self.last_action = actions[-1]
 
@@ -97,8 +103,7 @@ class SVActionLogBlock(ActionLogBlock):
         d = super().to_dict()
         d.update({
             'first_action': self.first_action,
-            'last_action': self.last_action,
-            'status': self.status
+            'last_action': self.last_action
         })
         return d
 

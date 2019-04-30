@@ -3,7 +3,7 @@ import asyncio
 import elasticsearch
 import elasticsearch_async
 from common.elasticsearch import async_helpers
-from common.elasticsearch.action_log import SVActionLogBlock, SVActionLogBlockStatus, GENESIS_BLOCK
+from common.elasticsearch.action_log import SVActionLogBlock, ActionLogBlockStatus, GENESIS_BLOCK
 from common.elasticsearch.bson_serializer import BSONSerializer
 from common import util
 from . import constant
@@ -54,7 +54,7 @@ class DocManager(DocManagerBase):
         self.unique_key = unique_key
         self.attachment_field = attachment_field
 
-        self.log_block_chain = SVBlockChain(self)  # todo: block chain保存有processing的blocks, 需要先recovery.
+        self.log_block_chain = BlockChain(self)  # todo: block chain保存有processing的blocks, 需要先recovery.
 
         self.bulk_buffer = BulkBuffer(self, self.chunk_size)
 
@@ -192,12 +192,29 @@ class DocManager(DocManagerBase):
         }
         self._push_to_buffer(action, action_log)
 
-    def bulk_upsert(self):
+    def bulk_index(self, docs, namespace):
         """
         Insert multiple documents into Elasticsearch directly.
         :return:
         """
-        raise NotImplementedError()
+        if not docs:
+            return None
+        index, doc_type = self._index_and_mapping(namespace)
+
+        def dm(doc):
+            return {
+                '_op_type': ElasticOperate.index,
+                '_index': index,
+                '_type': doc_type,
+                '_id': str(doc.pop('_id')),
+                '_source': doc
+            }
+
+        return asyncio.ensure_future(async_helpers.bulk(client=self.es,
+                                                        actions=map(dm, docs),
+                                                        max_retries=3,
+                                                        initial_backoff=0.1,
+                                                        max_backoff=1))
 
     async def _send_buffered_actions(self, action_buffer, action_log_block, refresh=False):
         """Send buffered actions to Elasticsearch"""
@@ -254,7 +271,10 @@ class DocManager(DocManagerBase):
             '_index': self.log_index,
             '_type': self.log_type,
             '_id': block.id,
-            '_source': {'doc': {'status': SVActionLogBlockStatus.done}}
+            '_source': {'doc': {
+                'status': ActionLogBlockStatus.done,
+                'actions': []
+            }}
         }
         actions = [log_commit]
         actions.extend(map(_emf, failed))
@@ -272,7 +292,7 @@ class DocManager(DocManagerBase):
         await self.auto_committer.stop()
         await asyncio.sleep(5)
         # all_tasks = asyncio.all_tasks(asyncio.get_event_loop())
-        # await asyncio.wait(all_tasks)
+        # asyncio.ensure_future(asyncio.wait(all_tasks))
         await self.es.transport.close()
         await asyncio.sleep(1)
 
@@ -374,9 +394,8 @@ class BulkBuffer:
         return [], None
 
 
-class SVBlockChain:
-    # todo: 验证使用完成block的性能，因为recovery时依赖actions
-    def __init__(self, docman: DocManager, serializer=BSONSerializer):
+class BlockChain:
+    def __init__(self, docman: DocManager, serializer=BSONSerializer()):
         self.docman = docman
         self.serializer = serializer
         block = self._get_last_block()
@@ -398,7 +417,7 @@ class SVBlockChain:
             "query": {
                 "term": {
                     "status.keyword": {
-                        "value": SVActionLogBlockStatus.processing
+                        "value": ActionLogBlockStatus.processing
                     }
                 }
             },
@@ -418,21 +437,70 @@ class SVBlockChain:
         return blocks
 
     def _get_last_block(self):
-        # todo: 使用同步方法
-        body = {
-            "size": 1,
-            "sort": [
-                {
-                    "create_time.$date": {
-                        "order": "desc"
-                    }
-                }
-            ]
-        }
-        result = self.docman.es_sync.search(index=self.docman.log_index, doc_type=self.docman.log_type, body=body)
+
         block = GENESIS_BLOCK
-        if result.get('hits').get('total') > 0:
-            block = self._gen_sv_block_from_dict(result.get('hits').get('hits')[0].get('_source'))
+        if self.docman.es_sync.indices.exists_type(index=self.docman.log_index,
+                                                   doc_type=self.docman.log_type):
+
+            first_non_valid_block_query_body = {
+                "size": 1,
+                "query": {
+                    "term": {
+                        "status.keyword": {
+                            "value": ActionLogBlockStatus.processing
+                        }
+                    }
+                },
+                "sort": [
+                    {
+                        "create_time.$date": {
+                            "order": "asc"
+                        }
+                    }
+                ]
+            }
+
+            rn = self.docman.es_sync.search(index=self.docman.log_index, doc_type=self.docman.log_type,
+                                            body=first_non_valid_block_query_body)
+            t = util.utc_now_str()
+            if rn.get('hits').get('total') > 0:
+                t = rn.get('hits').get('hits')[0].get('_source').get('create_time', {}).get('$date') or t
+
+            last_valid_block_query_body = {
+                "size": 1,
+                "query": {
+                    "bool": {
+                        "must": [
+                            {
+                                "term": {
+                                    "status.keyword": {
+                                        "value": ActionLogBlockStatus.done
+                                    }
+                                }
+                            },
+                            {
+                                "range": {
+                                    "create_time.$date": {
+                                        "lt": t
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                },
+                "sort": [
+                    {
+                        "create_time.$date": {
+                            "order": "asc"
+                        }
+                    }
+                ]
+            }
+            rl = self.docman.es_sync.search(index=self.docman.log_index, doc_type=self.docman.log_type,
+                                            body=last_valid_block_query_body)
+            if rl.get('hits').get('total') > 0:
+                block = self._gen_sv_block_from_dict(
+                    rl.get('hits').get('hits')[0].get('_source')) or t
         return block
 
     def _gen_sv_block_from_dict(self, obj):
@@ -453,9 +521,3 @@ class SVBlockChain:
             block.last_action = obj.get('last_action')
 
         return block
-
-
-class Recovery:
-    """Recovery from service termination"""
-    # todo: 从es log读取状态不为done的block, 逐个进行恢复
-    pass

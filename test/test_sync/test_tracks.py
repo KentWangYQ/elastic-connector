@@ -14,5 +14,7 @@ class TracksTest(unittest.TestCase):
         loop.run_until_complete(mongo_docman.stop())
         print('time used:', datetime.datetime.now() - now)
         # loop.run_until_complete(asyncio.sleep(5))
-        # loop.run_until_complete(asyncio.wait(asyncio.all_tasks(loop)))
+        tasks = asyncio.all_tasks(loop)
+        if tasks:
+            loop.run_until_complete(asyncio.wait(asyncio.all_tasks(loop)))
         loop.close()
