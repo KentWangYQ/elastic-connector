@@ -1,4 +1,6 @@
 import asyncio
+import config
+from common.elasticsearch.doc_manager import mongo_docman
 from common.mongo import oplog_client
 from module import sync
 

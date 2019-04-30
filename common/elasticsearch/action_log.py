@@ -40,6 +40,10 @@ class ActionLogBlock:
         self.status = status
         self.actions = actions
         self.actions_count = len(self.actions)
+
+        self.first_action = actions[0] if self.actions_count > 0 else {}
+        self.last_action = actions[-1] if self.actions_count > 0 else {}
+
         # Merkle tree for actions
         self.merkle_tree = self._make_merkle_tree()
 
@@ -69,7 +73,9 @@ class ActionLogBlock:
             'actions': self.actions,
             'actions_count': self.actions_count,
             'merkle_root_hash': self.merkle_root_hash,
-            'status': self.status
+            'status': self.status,
+            'first_action': self.first_action,
+            'last_action': self.last_action
         }
 
 
@@ -90,22 +96,14 @@ class SVActionLogBlock(ActionLogBlock):
                          status=status,
                          actions=actions,
                          serializer=serializer)
-        if self.actions_count > 0:
-            self.first_action = actions[0]
-            self.last_action = actions[-1]
+
+        self.first_action = {'ns': self.first_action.get('ns'), 'ts': self.first_action.get('ts')}
+        self.last_action = {'ns': self.last_action.get('ns'), 'ts': self.last_action.get('ts')}
 
         # Simple verify block do NOT has merkle_tree and actions
         self.merkle_tree = None
         self.actions = []
         self.status = status
-
-    def to_dict(self):
-        d = super().to_dict()
-        d.update({
-            'first_action': self.first_action,
-            'last_action': self.last_action
-        })
-        return d
 
 
 # GENESIS_BLOCK

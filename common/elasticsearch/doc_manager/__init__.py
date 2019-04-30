@@ -12,6 +12,6 @@ mongo_docman = DocManager(hosts=config.CONFIG.ELASTICSEARCH.get('hosts'),
                               'max_retries': 3,
                               'serializer': BSONSerializer()
                           },
-                          auto_commit=False,
+                          auto_commit=True,
                           # auto_commit_interval=10,
                           )

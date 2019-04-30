@@ -1,3 +1,4 @@
+import bson.timestamp
 import threading
 import asyncio
 import elasticsearch
@@ -240,7 +241,7 @@ class DocManager(DocManagerBase):
 
     def send_buffered_actions(self, refresh=False):
         # get action buffer and operate log block
-        action_buffer, action_log_block = self.bulk_buffer.get_block()
+        action_buffer, action_log_block = self.bulk_buffer.get_buffer()
 
         if action_buffer and action_log_block:
             asyncio.ensure_future(self._send_buffered_actions(action_buffer, action_log_block, refresh))
@@ -294,7 +295,7 @@ class DocManager(DocManagerBase):
         # all_tasks = asyncio.all_tasks(asyncio.get_event_loop())
         # asyncio.ensure_future(asyncio.wait(all_tasks))
         await self.es.transport.close()
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.25)
 
     def handle_command(self, command_doc, namespace, timestamp):
         raise NotImplementedError()
@@ -322,8 +323,11 @@ class AutoCommitter:
 
                 elif self._auto_send:
                     self.docman.send_buffered_actions()
-            self._skip_next = True
-            await asyncio.sleep(self._sleep_interval)
+            self._skip_next = False
+            try:
+                await asyncio.sleep(self._sleep_interval)
+            except Exception as e:
+                print(e)
 
     async def stop(self):
         self._stopped = True
@@ -395,11 +399,15 @@ class BulkBuffer:
 
 
 class BlockChain:
+    # todo 增加清理早期block
     def __init__(self, docman: DocManager, serializer=BSONSerializer()):
         self.docman = docman
         self.serializer = serializer
         block = self._get_last_block()
         self.head, self.prev, self.current = (block,) * 3
+        # self.last_ts = self.current.last_action.get('ts') or bson.timestamp.Timestamp(util.now_timestamp_s(), 1)
+        # todo: for test
+        self.last_ts = bson.timestamp.Timestamp(1550613365, 1)
 
     def gen_block(self, actions):
         # The create_time of log block can be the order of blocks
@@ -491,7 +499,7 @@ class BlockChain:
                 "sort": [
                     {
                         "create_time.$date": {
-                            "order": "asc"
+                            "order": "desc"
                         }
                     }
                 ]
