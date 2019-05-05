@@ -424,9 +424,9 @@ class BlockChain:
         self.serializer = serializer
         block = self._get_last_block()
         self.head, self.prev, self.current = (block,) * 3
-        # self.last_ts = self.current.last_action.get('ts') or bson.timestamp.Timestamp(util.now_timestamp_s(), 1)
+        self.last_ts = self.current.last_action.get('ts') or bson.timestamp.Timestamp(util.now_timestamp_s(), 1)
         # todo: for test
-        self.last_ts = bson.timestamp.Timestamp(1550613365, 1)
+        # self.last_ts = bson.timestamp.Timestamp(1550613365, 1)
 
     def gen_block(self, actions):
         # The create_time of log block can be the order of blocks
