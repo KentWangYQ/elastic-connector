@@ -96,7 +96,7 @@ class DocManager(DocManagerBase):
 
         return original_action
 
-    def _upsert(self, doc, namespace, timestamp=util.utc_now(), is_update=False):
+    def _upsert(self, doc, namespace, timestamp=util.utc_now(), *, doc_id=None, is_update=False):
         """
         index or update document
         :param doc: native object
@@ -106,7 +106,10 @@ class DocManager(DocManagerBase):
         :return:
         """
         index, doc_type = self._index_and_mapping(namespace)
-        doc_id = str(doc.pop('_id'))
+        _o_id = doc.pop('_id', '')
+        _parent = str(doc.pop('_parent', ''))
+
+        doc_id = str(doc_id or _o_id)
         doc['doc_id'] = doc_id
 
         _original_op_type = ElasticOperate.update if is_update else ElasticOperate.index
@@ -123,6 +126,9 @@ class DocManager(DocManagerBase):
             '_id': doc_id,
             '_source': doc
         })
+
+        if _parent:
+            action['_parent'] = _parent
 
         action_log = {**{'ns': namespace,
                          'ts': timestamp,
@@ -158,15 +164,16 @@ class DocManager(DocManagerBase):
         """
         self._upsert(doc, namespace, timestamp)
 
-    def update(self, doc, namespace, timestamp=util.utc_now()):
+    def update(self, doc_id, doc, namespace, timestamp=util.utc_now()):
         """
         Update document
+        :param doc_id:
         :param doc:
         :param namespace:
         :param timestamp:
         :return:
         """
-        self._upsert(doc, namespace, timestamp, is_update=True)
+        self._upsert(doc, namespace, timestamp, doc_id=doc_id, is_update=True)
 
     def delete(self, doc_id, namespace, timestamp):
         """
@@ -203,13 +210,17 @@ class DocManager(DocManagerBase):
         index, doc_type = self._index_and_mapping(namespace)
 
         def dm(doc):
-            return {
+            _parent = str(doc.pop('_parent', ''))
+            action = {
                 '_op_type': ElasticOperate.index,
                 '_index': index,
                 '_type': doc_type,
-                '_id': str(doc.pop('_id')),
+                '_id': str(doc.pop('_id', '')),
                 '_source': doc
             }
+            if _parent:
+                action['_parent'] = _parent
+            return action
 
         return asyncio.ensure_future(async_helpers.bulk(client=self.es,
                                                         actions=map(dm, docs),
@@ -316,6 +327,7 @@ class AutoCommitter:
         self._skip_next = False
 
     async def run(self):
+        p = self.ping()
         while not self._stopped:
             if not self._skip_next:
                 if self._auto_commit:
@@ -326,6 +338,7 @@ class AutoCommitter:
             self._skip_next = False
             try:
                 await asyncio.sleep(self._sleep_interval)
+                print(next(p), end='')
             except Exception as e:
                 print(e)
 
@@ -334,6 +347,12 @@ class AutoCommitter:
 
     def skip_next(self):
         self._skip_next = True
+
+    def ping(self):
+        while not self._stopped:
+            for i in range(10):
+                yield '.'
+            yield '\n'
 
 
 class BulkBuffer:

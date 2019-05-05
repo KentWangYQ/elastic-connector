@@ -1,12 +1,11 @@
 import asyncio
-import config
-from common.elasticsearch.doc_manager import mongo_docman
 from common.mongo import oplog_client
 from module import sync
 
 
 def main():
-    sync.rt()
+    sync.create_index()  # todo: rts是否需要create
+    sync.real_time_sync()
     while True:
         @oplog_client.on('data')
         def on_data(data):
