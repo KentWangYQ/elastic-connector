@@ -8,14 +8,19 @@ from common import util
 NO_RETRY_EXCEPTIONS = [SSLError, NotFoundError, AuthenticationException, AuthorizationException]
 
 
-def _chunk_actions(actions, chunk_size, max_chunk_bytes, serializer):
+async def expand_actions(actions):
+    async for action in actions:
+        yield expand_action(action)
+
+
+async def _chunk_actions(actions, chunk_size, max_chunk_bytes, serializer):
     """
     Split actions into chunks by number or size, serialize them into strings in
     the process.
     """
     bulk_actions, bulk_data = [], []
     size, action_count = 0, 0
-    for action, data in actions:
+    async for action, data in actions:
         raw_data, raw_action = data, action
         action = serializer.dumps(action)
         cur_size = len(action) + 1
@@ -143,7 +148,7 @@ bulk_semaphore = asyncio.Semaphore(20)
 
 
 async def bulk(client, actions, chunk_size=500, max_chunk_bytes=100 * 1024 * 1024,
-               expand_action_callback=expand_action, max_retries=0, initial_backoff=2,
+               expand_action_callback=expand_actions, max_retries=0, initial_backoff=2,
                max_backoff=600, **kwargs):
     """
     async helper for the :meth:`~elasticsearch.Elasticsearch.bulk` api that provides
@@ -167,11 +172,11 @@ async def bulk(client, actions, chunk_size=500, max_chunk_bytes=100 * 1024 * 102
     :arg max_backoff: maximum number of seconds a retry will wait
     """
     coros = []
-    actions = map(expand_action_callback, actions)
+    actions = expand_action_callback(actions)
 
-    for bulk_data, bulk_actions in _chunk_actions(actions, chunk_size,
-                                                  max_chunk_bytes,
-                                                  client.transport.serializer):
+    async for bulk_data, bulk_actions in _chunk_actions(actions, chunk_size,
+                                                        max_chunk_bytes,
+                                                        client.transport.serializer):
         coro = _process_bulk_chunk(client,
                                    bulk_actions,
                                    bulk_data,

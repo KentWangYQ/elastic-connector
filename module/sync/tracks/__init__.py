@@ -53,10 +53,10 @@ def create_index():
         # todo: 处理结果
 
 
-def index_all():
-    merchant_sync_manager.index_all()
-    impression_track_sync_manager.index_all(doc_process_func=_it_doc_process)
-    act_share_detail_sync_manager.index_all(doc_process_func=_it_doc_process)
+async def index_all():
+    await merchant_sync_manager.index_all()
+    await impression_track_sync_manager.index_all(doc_process_func=_it_doc_process)
+    await act_share_detail_sync_manager.index_all(doc_process_func=_it_doc_process)
 
 
 def real_time_sync():

@@ -32,14 +32,17 @@ class SyncManager:
         self.query_options = query_options or {}
         self._default_batch_size = 1000
 
-    def index_all(self, doc_process_func=None):
+    async def index_all(self, doc_process_func=None):
         """
         Whole quantity index from source
         :return:
         """
-        cursor = self.collection.find(**self.query_options)
 
-        self.mongo_docman.bulk_index(stream.enumerate.raw(cursor), self.namespace)
+        async def _():
+            async for doc in self.collection.find(**self.query_options):
+                yield doc
+
+        await self.mongo_docman.bulk_index(_(), self.namespace)
         # while True:
         #     batch = stream.take(cursor, self.query_options.get('batch_size') or self._default_batch_size)
         #     if not batch:

@@ -199,7 +199,7 @@ class DocManager(DocManagerBase):
         }
         self._push_to_buffer(action, action_log)
 
-    def bulk_index(self, docs, namespace):
+    async def bulk_index(self, docs, namespace):
         """
         Insert multiple documents into Elasticsearch directly.
         :return:
@@ -208,24 +208,25 @@ class DocManager(DocManagerBase):
             return None
         index, doc_type = self._index_and_mapping(namespace)
 
-        def dm(doc):
-            _parent = str(doc.pop('_parent', ''))
-            action = {
-                '_op_type': ElasticOperate.index,
-                '_index': index,
-                '_type': doc_type,
-                '_id': str(doc.pop('_id', '')),
-                '_source': doc
-            }
-            if _parent:
-                action['_parent'] = _parent
-            return action
+        async def dm(docs):
+            async for doc in docs:
+                _parent = str(doc.pop('_parent', ''))
+                action = {
+                    '_op_type': ElasticOperate.index,
+                    '_index': index,
+                    '_type': doc_type,
+                    '_id': str(doc.pop('_id', '')),
+                    '_source': doc
+                }
+                if _parent:
+                    action['_parent'] = _parent
+                yield action
 
-        return asyncio.ensure_future(async_helpers.bulk(client=self.es,
-                                                        actions=map(dm, docs),
-                                                        max_retries=3,
-                                                        initial_backoff=0.1,
-                                                        max_backoff=1))
+        await async_helpers.bulk(client=self.es,
+                                 actions=dm(docs),
+                                 max_retries=3,
+                                 initial_backoff=0.1,
+                                 max_backoff=1)
 
     async def _send_buffered_actions(self, action_buffer, action_log_block, refresh=False):
         """Send buffered actions to Elasticsearch"""
