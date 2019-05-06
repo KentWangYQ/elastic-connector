@@ -12,20 +12,17 @@ es_errors = {
 tracks = {
     'index': 'rts_test',
     'types': {
+        # todo: for test index
         'merchant': {
-            'namespace': 'tracks.merchant',
+            'namespace': 'rts_test.merchant',
             'collection': 'merchants'
         },
-        # 'impression_track': {
-        #     'namespace': 'tracks.impressiontrack',
-        #     'collection': 'impressiontracks'
-        # },
-        'impression_track': {  # todo: for test remove
-            'namespace': 'rts_test.rt',
+        'impression_track': {
+            'namespace': 'rts_test.impressiontrack',
             'collection': 'impressiontracks'
         },
         'act_share_detail': {
-            'namespace': 'tracks.actsharedetail',
+            'namespace': 'rts_test.actsharedetail',
             'collection': 'actsharedetails'
         }
     },

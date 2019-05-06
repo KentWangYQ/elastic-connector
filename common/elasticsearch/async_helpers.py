@@ -139,6 +139,9 @@ async def _process_bulk_chunk(client: AsyncElasticsearch,
     return succeed, failed
 
 
+bulk_semaphore = asyncio.Semaphore(20)
+
+
 async def bulk(client, actions, chunk_size=500, max_chunk_bytes=100 * 1024 * 1024,
                expand_action_callback=expand_action, max_retries=0, initial_backoff=2,
                max_backoff=600, **kwargs):
@@ -178,7 +181,8 @@ async def bulk(client, actions, chunk_size=500, max_chunk_bytes=100 * 1024 * 102
                                    **kwargs)
         coros.append(coro)
 
-    done, _ = await asyncio.wait(coros)
+    async with bulk_semaphore:
+        done, _ = await asyncio.wait(coros)
     succeed, failed = [], []
     for future in done:
         s, f = future.result()

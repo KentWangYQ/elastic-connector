@@ -5,6 +5,9 @@ from module import sync
 
 def main():
     sync.create_index()  # todo: rts是否需要create
+
+    sync.index_all()
+
     sync.real_time_sync()
     while True:
         @oplog_client.on('data')

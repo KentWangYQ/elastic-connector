@@ -1,5 +1,4 @@
 import bson.timestamp
-import threading
 import asyncio
 import elasticsearch
 import elasticsearch_async
@@ -38,7 +37,7 @@ class DocManager(DocManagerBase):
         self.es = elasticsearch_async.AsyncElasticsearch(hosts=hosts, **client_options)
         self._formatter = DefaultDocumentFormatter()  # todo 验证formatter
         self.chunk_size = chunk_size
-        self.look = threading.Lock()  # todo: 确认实际应用场景
+        self.semaphore = asyncio.Semaphore(kwargs.get('max_sema') or 20)  # todo: 确认实际应用场景
 
         # auto_commit_interval < 0: do not commit automatically
         # auto_commit_interval = 0: commit each request;
@@ -350,9 +349,10 @@ class AutoCommitter:
 
     def ping(self):
         while not self._stopped:
-            for i in range(10):
-                yield '.'
-            yield '\n'
+            # for i in range(10):
+            #     yield '.'
+            # yield '\n'
+            yield 'tasks waiting: %s\n' % len(asyncio.all_tasks())
 
 
 class BulkBuffer:

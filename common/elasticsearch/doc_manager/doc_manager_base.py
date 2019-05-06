@@ -99,7 +99,7 @@ class DocManagerBase:
         """Handle a command."""
         raise NotImplementedError()
 
-    def bulk_index(self):
+    def bulk_index(self, docs, namespace):
         """"""
         raise NotImplementedError()
 

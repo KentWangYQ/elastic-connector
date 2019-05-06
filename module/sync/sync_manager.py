@@ -3,12 +3,14 @@ from aiostream import stream
 
 
 class SyncManager:
-    def __init__(self, oplog_client, mongo_docman, collection, namespace, query_options=None, *args, **kwargs):
+    def __init__(self, oplog_client, mongo_docman, collection, namespace, query_options=None, *args,
+                 **kwargs):
         """
 
         :param oplog_client:
         :param mongo_docman:
         :param collection:
+        :param collection_name:
         :param namespace:
         :param query_options:
                 - filter
@@ -27,24 +29,27 @@ class SyncManager:
         self.mongo_docman = mongo_docman
         self.collection = collection
         self.namespace = namespace
-        self.query_options = query_options or {'batch_size': 1000}
+        self.query_options = query_options or {}
+        self._default_batch_size = 1000
 
-    async def index_all(self, doc_process_func=None):
+    def index_all(self, doc_process_func=None):
         """
         Whole quantity index from source
         :return:
         """
         cursor = self.collection.find(**self.query_options)
-        while True:
-            batch = await stream.list(stream.take(cursor, self.query_options.get('batch_size')))
-            if not batch:
-                break
-            print('batch size', len(batch))  # todo: logging化
-            if doc_process_func:
-                # doc process
-                assert isfunction(doc_process_func), 'doc_process_func must be a function!'
-                batch = map(doc_process_func, batch)
-            self.mongo_docman.bulk_index(batch, self.namespace)
+
+        self.mongo_docman.bulk_index(stream.enumerate.raw(cursor), self.namespace)
+        # while True:
+        #     batch = stream.take(cursor, self.query_options.get('batch_size') or self._default_batch_size)
+        #     if not batch:
+        #         break
+        #     # print('batch size', len(batch))  # todo: logging化
+        #     if doc_process_func:
+        #         # doc process
+        #         assert isfunction(doc_process_func), 'doc_process_func must be a function!'
+        #         batch = map(doc_process_func, batch)
+        #     self.mongo_docman.bulk_index(batch, self.namespace)
 
     def insert_doc(self, oplog, doc_process_func=None):
         """
@@ -84,16 +89,16 @@ class SyncManager:
     def real_time_sync(self, ops=('i', 'u', 'd'), doc_process_funcs=None):
         # todo: 增加log
         if 'i' in ops:
-            @self.oplog_client.on('%s_insert' % self.collection)
+            @self.oplog_client.on('%s_insert' % self.collection.name)
             def on_insert(oplog):
                 return self.insert_doc(oplog, doc_process_funcs.get('i'))
 
         if 'u' in ops:
-            @self.oplog_client.on('%s_update' % self.collection)
+            @self.oplog_client.on('%s_update' % self.collection.name)
             def on_update(oplog):
                 return self.update_doc(oplog, doc_process_funcs.get('u'))
 
         if 'd' in ops:
-            @self.oplog_client.on('%s_delete' % self.collection)
+            @self.oplog_client.on('%s_delete' % self.collection.name)
             def on_delete(oplog):
                 return self.delete_doc(oplog, doc_process_funcs.get('d'))

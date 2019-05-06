@@ -1,6 +1,7 @@
 import pydash as _
 from common.mongo import oplog_client
 from common.elasticsearch.doc_manager import mongo_docman
+from model import merchant, impression_track, act_share_detail
 
 from ..sync_manager import SyncManager
 from module.constant import mapping
@@ -14,10 +15,23 @@ _routing = _map.get('routing')
 _mappings = _map.get('mappings')
 _settings = _map.get('settings')
 
+merchant_sync_manager = SyncManager(oplog_client,
+                                    mongo_docman,
+                                    collection=merchant,
+                                    namespace=_types.get('merchant').get('namespace'),
+                                    query_options={
+                                        'projection': {'createTime': 0}
+                                    })
+
 impression_track_sync_manager = SyncManager(oplog_client,
                                             mongo_docman,
-                                            collection=_types.get('impression_track').get('collection'),
+                                            collection=impression_track,
                                             namespace=_types.get('impression_track').get('namespace'))
+
+act_share_detail_sync_manager = SyncManager(oplog_client,
+                                            mongo_docman,
+                                            collection=act_share_detail,
+                                            namespace=_types.get('act_share_detail').get('namespace'))
 
 
 def _it_doc_process(doc):
@@ -39,9 +53,13 @@ def create_index():
         # todo: 处理结果
 
 
-async def index_all():
-    await impression_track_sync_manager.index_all(doc_process_func=_it_doc_process)
+def index_all():
+    merchant_sync_manager.index_all()
+    impression_track_sync_manager.index_all(doc_process_func=_it_doc_process)
+    act_share_detail_sync_manager.index_all(doc_process_func=_it_doc_process)
 
 
 def real_time_sync():
+    merchant_sync_manager.real_time_sync()
     impression_track_sync_manager.real_time_sync(ops=('i', 'd'), doc_process_funcs={'i': _it_doc_process})
+    act_share_detail_sync_manager.real_time_sync(ops=('i', 'd'), doc_process_funcs={'i': _it_doc_process})
