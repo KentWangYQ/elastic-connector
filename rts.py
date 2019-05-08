@@ -6,8 +6,9 @@ from module import sync
 def main():
     sync.create_index()  # todo: rts是否需要create
 
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(sync.index_all())
+    # loop = asyncio.get_event_loop()
+    # loop.run_until_complete(sync.index_all())
+    # loop.run_forever()
 
     sync.real_time_sync()
     while True:
@@ -21,6 +22,7 @@ def main():
 
         loop = asyncio.get_event_loop()
         loop.run_until_complete(oplog_client.tail())
+        # loop.run_forever()
         loop.close()
 
 

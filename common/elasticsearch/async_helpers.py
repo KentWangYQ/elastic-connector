@@ -8,19 +8,14 @@ from common import util
 NO_RETRY_EXCEPTIONS = [SSLError, NotFoundError, AuthenticationException, AuthorizationException]
 
 
-async def expand_actions(actions):
-    async for action in actions:
-        yield expand_action(action)
-
-
-async def _chunk_actions(actions, chunk_size, max_chunk_bytes, serializer):
+def _chunk_actions(actions, chunk_size, max_chunk_bytes, serializer):
     """
     Split actions into chunks by number or size, serialize them into strings in
     the process.
     """
     bulk_actions, bulk_data = [], []
     size, action_count = 0, 0
-    async for action, data in actions:
+    for action, data in actions:
         raw_data, raw_action = data, action
         action = serializer.dumps(action)
         cur_size = len(action) + 1
@@ -147,9 +142,9 @@ async def _process_bulk_chunk(client: AsyncElasticsearch,
 bulk_semaphore = asyncio.Semaphore(20)
 
 
-async def bulk(client, actions, chunk_size=500, max_chunk_bytes=100 * 1024 * 1024,
-               expand_action_callback=expand_actions, max_retries=0, initial_backoff=2,
-               max_backoff=600, **kwargs):
+async def bulk(client, actions, chunk_size=5000, max_chunk_bytes=100 * 1024 * 1024,
+               expand_action_callback=expand_action, max_retries=0, initial_backoff=2,
+               max_backoff=600, semaphore=None, **kwargs):
     """
     async helper for the :meth:`~elasticsearch.Elasticsearch.bulk` api that provides
     a more human friendly interface - it consumes an iterator of actions and
@@ -171,12 +166,12 @@ async def bulk(client, actions, chunk_size=500, max_chunk_bytes=100 * 1024 * 102
         2**retry_number``
     :arg max_backoff: maximum number of seconds a retry will wait
     """
-    coros = []
-    actions = expand_action_callback(actions)
+    results, coros = [], []
+    actions = map(expand_action_callback, actions)
 
-    async for bulk_data, bulk_actions in _chunk_actions(actions, chunk_size,
-                                                        max_chunk_bytes,
-                                                        client.transport.serializer):
+    for bulk_data, bulk_actions in _chunk_actions(actions, chunk_size,
+                                                  max_chunk_bytes,
+                                                  client.transport.serializer):
         coro = _process_bulk_chunk(client,
                                    bulk_actions,
                                    bulk_data,
@@ -184,14 +179,23 @@ async def bulk(client, actions, chunk_size=500, max_chunk_bytes=100 * 1024 * 102
                                    initial_backoff=initial_backoff,
                                    max_backoff=max_backoff,
                                    **kwargs)
-        coros.append(coro)
 
-    async with bulk_semaphore:
+        coros.append(coro)
+        # result = await coro
+        # # print('succeed: ', len(result[0]), 'failed: ', len(result[1]))
+        # if len(result[1]) > 0:
+        #     print(result[1][0])
+        # results.append(result)
+
+    async with semaphore or bulk_semaphore:
         done, _ = await asyncio.wait(coros)
     succeed, failed = [], []
-    for future in done:
-        s, f = future.result()
+    for coro in done:
+        s, f = coro.result()
         succeed.extend(s)
         failed.extend(f)
+
+    # if semaphore:
+    #     semaphore.release()
 
     return succeed, failed

@@ -8,7 +8,7 @@ mongo_docman = DocManager(hosts=config.CONFIG.ELASTICSEARCH.get('hosts'),
                               'retry_on_timeout': True,
                               'sniff_on_start': False,
                               'sniff_on_connection_fail': False,
-                              'sniffer_timeout': 60,
+                              'sniffer_timeout': 1200,
                               'max_retries': 3,
                               'serializer': BSONSerializer()
                           },

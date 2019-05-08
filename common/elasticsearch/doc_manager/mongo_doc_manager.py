@@ -1,7 +1,13 @@
+import os
+import sys
+import pickle
 import bson.timestamp
 import asyncio
 import elasticsearch
 import elasticsearch_async
+from math import ceil
+from datetime import datetime
+from aiostream import stream
 from common.elasticsearch import async_helpers
 from common.elasticsearch.action_log import SVActionLogBlock, ActionLogBlockStatus, GENESIS_BLOCK
 from common.elasticsearch.bson_serializer import BSONSerializer
@@ -37,7 +43,7 @@ class DocManager(DocManagerBase):
         self.es = elasticsearch_async.AsyncElasticsearch(hosts=hosts, **client_options)
         self._formatter = DefaultDocumentFormatter()  # todo 验证formatter
         self.chunk_size = chunk_size
-        self.semaphore = asyncio.Semaphore(kwargs.get('max_sema') or 20)  # todo: 确认实际应用场景
+        self.semaphore = asyncio.Semaphore(kwargs.get('max_sema') or 200)  # todo: 确认实际应用场景
 
         # auto_commit_interval < 0: do not commit automatically
         # auto_commit_interval = 0: commit each request;
@@ -61,6 +67,8 @@ class DocManager(DocManagerBase):
         self.auto_committer = AutoCommitter(self, self.auto_send_interval, self.auto_commit_interval)
         if auto_commit:
             asyncio.ensure_future(self.auto_committer.run())
+
+        self._processed = 0  # 处理完成条目技术，用于速度计算
 
     @staticmethod
     def _index_and_mapping(namespace):
@@ -199,7 +207,7 @@ class DocManager(DocManagerBase):
         }
         self._push_to_buffer(action, action_log)
 
-    async def bulk_index(self, docs, namespace):
+    async def bulk_index(self, docs, namespace, params=None, chunk_size=2000):
         """
         Insert multiple documents into Elasticsearch directly.
         :return:
@@ -208,25 +216,40 @@ class DocManager(DocManagerBase):
             return None
         index, doc_type = self._index_and_mapping(namespace)
 
-        async def dm(docs):
-            async for doc in docs:
-                _parent = str(doc.pop('_parent', ''))
-                action = {
-                    '_op_type': ElasticOperate.index,
-                    '_index': index,
-                    '_type': doc_type,
-                    '_id': str(doc.pop('_id', '')),
-                    '_source': doc
-                }
-                if _parent:
-                    action['_parent'] = _parent
-                yield action
+        # @asyncio.coroutine
+        def dm(doc):
+            _parent = str(doc.pop('_parent', ''))
+            action = {
+                '_op_type': ElasticOperate.index,
+                '_index': index,
+                '_type': doc_type,
+                '_id': str(doc.pop('_id', '')),
+                '_source': doc
+            }
+            if _parent:
+                action['_parent'] = _parent
+            return action
 
-        await async_helpers.bulk(client=self.es,
-                                 actions=dm(docs),
-                                 max_retries=3,
-                                 initial_backoff=0.1,
-                                 max_backoff=1)
+        async with stream.chunks(docs, chunk_size).stream() as chunks:
+            async for chunk in chunks:
+                # await self.semaphore.acquire()
+                # print('--------------semaphore value: ', self.semaphore._value)
+
+                async def t(chunk):  # todo 重构
+                    actions_future = asyncio.ensure_future(async_helpers.bulk(client=self.es,
+                                                                              actions=map(dm, chunk),
+                                                                              # dm(await stream.list(chunk)),
+                                                                              max_retries=3,
+                                                                              initial_backoff=0.1,
+                                                                              max_backoff=1,
+                                                                              params=params,
+                                                                              semaphore=self.semaphore))
+                    succeed, failed = await actions_future
+                    # succeed, failed = future.result()
+                    self._processed += len(succeed) + len(failed)
+                    print('succeed:', len(succeed), 'failed:', len(failed))
+
+                asyncio.ensure_future(t(chunk))
 
     async def _send_buffered_actions(self, action_buffer, action_log_block, refresh=False):
         """Send buffered actions to Elasticsearch"""
@@ -242,6 +265,7 @@ class DocManager(DocManagerBase):
 
         # bulk result which is a tuple for succeed and failed actions: (succeed, failed)
         succeed, failed = actions_future.result()
+        self._processed += len(succeed) + len(failed)
         print('succeed:', len(succeed), 'failed:', len(failed))
         # print(succeed, failed)
 
@@ -314,9 +338,13 @@ class DocManager(DocManagerBase):
     def search(self):
         pass
 
+    def delete_by_query_sync(self, namespace, body, params=None):
+        index, doc_type = self._index_and_mapping(namespace)
+        return self.es_sync.delete_by_query(index=index, body=body, doc_type=doc_type, params=params)
+
 
 class AutoCommitter:
-    def __init__(self, docman, send_interval=0, commit_interval=0, sleep_interval=1):
+    def __init__(self, docman, send_interval=0, commit_interval=0, sleep_interval=5):
         self.docman = docman
         self._send_interval = send_interval
         self._commit_interval = commit_interval
@@ -349,11 +377,20 @@ class AutoCommitter:
         self._skip_next = True
 
     def ping(self):
+        start = 0
         while not self._stopped:
             # for i in range(10):
             #     yield '.'
             # yield '\n'
-            yield 'tasks waiting: %s\n' % len(asyncio.all_tasks())
+            c, self.docman._processed = self.docman._processed, 0
+            t = datetime.now().timestamp() - start
+            start = datetime.now().timestamp()
+
+            if start == 0:
+                yield ''
+
+            yield 'tasks waiting: %s --- speed: %d items/sec\n' % (
+                len(asyncio.all_tasks()), ceil(c / t))
 
 
 class BulkBuffer:
@@ -419,15 +456,53 @@ class BulkBuffer:
 
 
 class BlockChain:
+    __TS_MARK_FILE = sys.path[0] + '/ts_mark.data'
+
     # todo 增加清理早期block
     def __init__(self, docman: DocManager, serializer=BSONSerializer()):
         self.docman = docman
         self.serializer = serializer
         block = self._get_last_block()
         self.head, self.prev, self.current = (block,) * 3
-        self.last_ts = self.current.last_action.get('ts') or bson.timestamp.Timestamp(util.now_timestamp_s(), 1)
-        # todo: for test
-        # self.last_ts = bson.timestamp.Timestamp(1550613365, 1)
+        self.last_ts = self._get_last_block() or self.current.last_action.get('ts') or bson.timestamp.Timestamp(
+            util.now_timestamp_s(), 1)
+
+    def mark_ts(self):
+        """
+        Mark current timestamp
+        Use as last ts in some scenes
+            - Index all indices
+            - Reindex one or more indices
+        :return:
+        """
+        f = open(self.__TS_MARK_FILE, 'wb')
+        print(util.now_timestamp_s())
+        pickle.dump(bson.timestamp.Timestamp(util.now_timestamp_s(), 1), f)
+        f.close()
+
+    def _get_last_ts_mark(self):
+        """
+        Get last ts mark.
+
+        If mark file not exist or read failed, return None
+        :return:
+        """
+        x = None
+        if os.path.exists(self.__TS_MARK_FILE):
+            try:
+                with open(self.__TS_MARK_FILE, 'rb') as f:
+                    x = pickle.load(f)
+            except Exception as e:
+                # todo: 增加错误处理，WARNING
+                pass
+
+            try:
+                os.remove(self.__TS_MARK_FILE)
+            except Exception as e:
+                # todo: 增加错误处理，WARNING
+                pass
+
+        return x
 
     def gen_block(self, actions):
         # The create_time of log block can be the order of blocks

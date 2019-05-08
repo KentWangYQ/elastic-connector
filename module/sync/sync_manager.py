@@ -1,5 +1,4 @@
 from inspect import isfunction
-from aiostream import stream
 
 
 class SyncManager:
@@ -30,29 +29,19 @@ class SyncManager:
         self.collection = collection
         self.namespace = namespace
         self.query_options = query_options or {}
-        self._default_batch_size = 1000
+        self._default_batch_size = 2000
+        self.routing = kwargs.get('_routing')
 
     async def index_all(self, doc_process_func=None):
         """
         Whole quantity index from source
         :return:
         """
+        cursor = self.collection.find(sort=[('_id', -1)], **self.query_options)
+        await self.mongo_docman.bulk_index(cursor, self.namespace, params={'routing': self.routing})
 
-        async def _():
-            async for doc in self.collection.find(**self.query_options):
-                yield doc
-
-        await self.mongo_docman.bulk_index(_(), self.namespace)
-        # while True:
-        #     batch = stream.take(cursor, self.query_options.get('batch_size') or self._default_batch_size)
-        #     if not batch:
-        #         break
-        #     # print('batch size', len(batch))  # todo: logging化
-        #     if doc_process_func:
-        #         # doc process
-        #         assert isfunction(doc_process_func), 'doc_process_func must be a function!'
-        #         batch = map(doc_process_func, batch)
-        #     self.mongo_docman.bulk_index(batch, self.namespace)
+    def delete_all(self):
+        return self.mongo_docman.delete_by_query_sync(namespace=self.namespace, body={"query": {"match_all": {}}})
 
     def insert_doc(self, oplog, doc_process_func=None):
         """

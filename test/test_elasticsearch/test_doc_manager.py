@@ -1,7 +1,6 @@
 import unittest
 import datetime
 import asyncio
-import bson
 
 import config
 from common.elasticsearch import doc_manager
@@ -32,19 +31,19 @@ class MongoDocManagerTest(unittest.TestCase):
         # loop.close()
 
     def test_upsert(self):
-        doc_manager.mongo_dm.update({'_id': 1, 'now': datetime.datetime.now(), 'a': 1, 'b': 2}, *self.TESTARGS)
-        doc_manager.mongo_dm.update({'_id': 1, 'now': datetime.datetime.now(), 'a': 3, 'b': 4}, *self.TESTARGS)
-        doc_manager.mongo_dm.update({'_id': 1, '$set': {'a': 5, 'b': 6}}, *self.TESTARGS)
+        doc_manager.mongo_docman.update({'_id': 1, 'now': datetime.datetime.now(), 'a': 1, 'b': 2}, *self.TESTARGS)
+        doc_manager.mongo_docman.update({'_id': 1, 'now': datetime.datetime.now(), 'a': 3, 'b': 4}, *self.TESTARGS)
+        doc_manager.mongo_docman.update({'_id': 1, '$set': {'a': 5, 'b': 6}}, *self.TESTARGS)
 
-        doc_manager.mongo_dm.update({'_id': 1, '$unset': {'a': 1}}, *self.TESTARGS)
-        future = doc_manager.mongo_dm.commit()
+        doc_manager.mongo_docman.update({'_id': 1, '$unset': {'a': 1}}, *self.TESTARGS)
+        future = doc_manager.mongo_docman.commit()
         self._run(future)
 
     def test_delete(self):
         _id = 1
-        doc_manager.mongo_dm.index({'_id': _id, 'now': datetime.datetime.now(), 'a': 1, 'b': 2}, *self.TESTARGS)
-        doc_manager.mongo_dm.delete(_id, *self.TESTARGS)
-        future = doc_manager.mongo_dm.commit()
+        doc_manager.mongo_docman.index({'_id': _id, 'now': datetime.datetime.now(), 'a': 1, 'b': 2}, *self.TESTARGS)
+        doc_manager.mongo_docman.delete(_id, *self.TESTARGS)
+        future = doc_manager.mongo_docman.commit()
         self._run(future)
 
     def test_auto_committer(self):
@@ -70,3 +69,14 @@ class MongoDocManagerTest(unittest.TestCase):
         loop = asyncio.get_event_loop()
         loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(loop)))
         # loop.close()
+
+
+class BlockChainTest(unittest.TestCase):
+    bc = doc_manager.mongo_docman.log_block_chain
+
+    def test_mark_ts(self):
+        self.bc.mark_ts()
+
+    def test_get_last_ts_mark(self):
+        r = self.bc._get_last_ts_mark()
+        print(r)
