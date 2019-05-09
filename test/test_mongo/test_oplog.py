@@ -9,7 +9,8 @@ class OplogTest(unittest.TestCase):
         oplog = Oplog(limit=10)
 
         @oplog.on('data')
-        def on_data(doc):
+        async def on_data(doc):
+            await asyncio.sleep(.1)
             print('event data:', BSONSerializer().dumps(doc))
 
         @oplog.on('insert')
@@ -20,9 +21,11 @@ class OplogTest(unittest.TestCase):
         def on_coll_insert(doc):
             print('event coll insert:', doc)
 
-        @oplog.on('data')
-        def close(_):
+        async def close():
+            await asyncio.sleep(5)
             oplog.close()
+
+        asyncio.ensure_future(close())
 
         loop = asyncio.get_event_loop()
         loop.run_until_complete(oplog.tail())

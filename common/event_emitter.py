@@ -23,7 +23,13 @@ class EventEmitter(object):
             for listener in listeners:
                 if hasattr(listener, 'is_once') and listener.is_once:
                     self.remove(event, listener)
-                listener(*args, **kwargs)
+                # Isolate exception
+                try:
+                    listener(*args, **kwargs)
+                except Exception as e:
+                    # Exceptions raised during run listener emit to event 'i_error',
+                    # customer can process them outside.
+                    self.emit('i_error', e, *args, **kwargs)
 
     def parallel_emit(self, event, *args, **kwargs):
         if event in self._events:

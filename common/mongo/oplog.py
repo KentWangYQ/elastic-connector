@@ -48,6 +48,10 @@ class Oplog(EventEmitter):
         self._skip = skip
         self._limit = limit
 
+        @self.on('i_error')
+        def i_error(e, *args, **kwargs):
+            self.emit('error', e, *args, **kwargs)
+
     _op_mapping = {
         'i': 'insert',
         'u': 'update',
@@ -66,6 +70,8 @@ class Oplog(EventEmitter):
                                            limit=self._limit)
             while not self._close and cursor.alive:
                 async for doc in cursor:
+                    if self._close:
+                        return
                     try:
                         # todo 同一个事件中的任何listener抛异常都会影响其他listener执行，进行隔离，但是要做好异常处理
                         # emit event 'data'
@@ -82,7 +88,7 @@ class Oplog(EventEmitter):
             cursor.close()
 
     def close(self):
-        # todo 无法渗透关闭
+        print('oplog closing ...')
         self._close = True
 
     @staticmethod

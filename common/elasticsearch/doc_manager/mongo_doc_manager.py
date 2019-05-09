@@ -41,9 +41,11 @@ class DocManager(DocManagerBase):
             hosts = [hosts]
         self.es_sync = elasticsearch.Elasticsearch(hosts=hosts, **client_options)
         self.es = elasticsearch_async.AsyncElasticsearch(hosts=hosts, **client_options)
-        self._formatter = DefaultDocumentFormatter()  # todo 验证formatter
+        self._formatter = DefaultDocumentFormatter()
         self.chunk_size = chunk_size
-        self.semaphore = asyncio.Semaphore(kwargs.get('semaphore_value') or constant.CONCURRENT_LIMIT)  # todo: 确认实际应用场景
+
+        # used for elasticsearch request traffic limit
+        self.semaphore = asyncio.Semaphore(kwargs.get('semaphore_value') or constant.CONCURRENT_LIMIT)
 
         # auto_commit_interval < 0: do not commit automatically
         # auto_commit_interval = 0: commit each request;
@@ -60,7 +62,7 @@ class DocManager(DocManagerBase):
         self.unique_key = unique_key
         self.attachment_field = attachment_field
 
-        self.log_block_chain = BlockChain(self)  # todo: block chain保存有processing的blocks, 需要先recovery.
+        self.log_block_chain = BlockChain(self)
 
         self.bulk_buffer = BulkBuffer(self, self.chunk_size)
 
@@ -378,6 +380,7 @@ class AutoCommitter:
         self._skip_next = True
 
     def ping(self):
+        # todo: 独立成Monitor，监视器
         start = 0
         while not self._stopped:
             # for i in range(10):
