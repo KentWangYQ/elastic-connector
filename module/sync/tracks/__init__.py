@@ -2,7 +2,6 @@ import pydash as _
 from common.mongo import oplog_client
 from common.elasticsearch.doc_manager import mongo_docman
 from model import merchant, impression_track, act_share_detail
-from module import sync
 from ..sync_manager import SyncManager
 from module.constant import mapping
 
@@ -34,7 +33,6 @@ act_share_detail_sync_manager = SyncManager(oplog_client,
                                             mongo_docman,
                                             collection=act_share_detail,
                                             namespace=_types.get('act_share_detail').get('namespace'))
-sync.register_sync_manager(merchant_sync_manager)
 
 
 def _it_doc_process(doc):
@@ -59,7 +57,17 @@ def create_index():
 async def index_all():
     await merchant_sync_manager.index_all()
     await impression_track_sync_manager.index_all(doc_process_func=_it_doc_process)
-    # await act_share_detail_sync_manager.index_all(doc_process_func=_it_doc_process)
+    await act_share_detail_sync_manager.index_all(doc_process_func=_it_doc_process)
+
+
+def delete_all():
+    merchant_sync_manager.delete_all()
+    impression_track_sync_manager.delete_all()
+    act_share_detail_sync_manager.delete_all()
+
+
+def delete_index():
+    merchant_sync_manager.delete_index()
 
 
 def real_time_sync():

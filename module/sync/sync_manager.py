@@ -1,4 +1,5 @@
 from inspect import isfunction
+from module import constant
 
 
 class SyncManager:
@@ -29,7 +30,8 @@ class SyncManager:
         self.collection = collection
         self.namespace = namespace
         self.query_options = query_options or {}
-        self._default_batch_size = 2000
+        if 'batch_size' not in self.query_options:
+            self.query_options['batch_size'] = constant.MONGO_BATCH_SIZE
         self.routing = kwargs.get('_routing')
 
     async def index_all(self, doc_process_func=None):
@@ -42,6 +44,9 @@ class SyncManager:
 
     def delete_all(self):
         return self.mongo_docman.delete_by_query_sync(namespace=self.namespace, body={"query": {"match_all": {}}})
+
+    def delete_index(self):
+        return self.mongo_docman.delete_index(namespace=self.namespace, params={'ignore_unavailable': True})
 
     def insert_doc(self, oplog, doc_process_func=None):
         """

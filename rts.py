@@ -4,12 +4,6 @@ from module import sync
 
 
 def main():
-    sync.create_index()  # todo: rts是否需要create
-
-    # loop = asyncio.get_event_loop()
-    # loop.run_until_complete(sync.index_all())
-    # loop.run_forever()
-
     sync.real_time_sync()
     while True:
         @oplog_client.on('data')
