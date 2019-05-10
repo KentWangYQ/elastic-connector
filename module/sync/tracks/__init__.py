@@ -57,7 +57,7 @@ def create_index():
 async def index_all():
     await merchant_sync_manager.index_all()
     await impression_track_sync_manager.index_all(doc_process_func=_it_doc_process)
-    await act_share_detail_sync_manager.index_all(doc_process_func=_it_doc_process)
+    # await act_share_detail_sync_manager.index_all(doc_process_func=_it_doc_process)
 
 
 def delete_all():

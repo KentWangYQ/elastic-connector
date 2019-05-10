@@ -219,6 +219,7 @@ class DocManager(DocManagerBase):
         index, doc_type = self._index_and_mapping(namespace)
 
         def dm(doc):
+            # async for doc in docs:
             _parent = str(doc.pop('_parent', ''))
             action = {
                 '_op_type': ElasticOperate.index,
@@ -231,22 +232,39 @@ class DocManager(DocManagerBase):
                 action['_parent'] = _parent
             return action
 
-        async with stream.chunks(docs, chunk_size or self.chunk_size).stream() as chunks:
-            async def t(chunk):  # todo 重构
-                actions_future = asyncio.ensure_future(async_helpers.bulk(client=self.es,
-                                                                          actions=map(dm, chunk),  # todo: 实际读取后置
-                                                                          # dm(await stream.list(chunk)),
-                                                                          max_retries=3,
-                                                                          initial_backoff=0.1,
-                                                                          max_backoff=1,
-                                                                          params=params,
-                                                                          semaphore=self.semaphore))
-                succeed, failed = await actions_future
-                self._processed += len(succeed) + len(failed)
+        # async with stream.chunks(docs, chunk_size or self.chunk_size).stream() as chunks:
+
+        async def t(chunk):  # todo 重构\
+            async for (succeed, failed) in async_helpers.bulk(client=self.es,
+                                                              actions=chunk,  # todo: 实际读取后置
+                                                              max_retries=3,
+                                                              initial_backoff=0.1,
+                                                              max_backoff=1,
+                                                              params=params,
+                                                              expand_action_callback=dm,
+                                                              semaphore=self.semaphore):
+                # print(result)
                 print('succeed:', len(succeed), 'failed:', len(failed))
 
-            async for chunk in chunks:
-                asyncio.ensure_future(t(chunk))
+        # async for chunk in stream.chunks(docs, chunk_size or self.chunk_size).stream():
+        #     print(1)
+        #     future = asyncio.ensure_future(t(chunk))
+        #     await asyncio.wait([future])
+        #     await asyncio.wait([future])
+
+        # async with stream.chunks(docs, chunk_size or self.chunk_size).stream() as chunks:
+        #     async for (succeed, failed) in asyncio.as_completed(
+        #             [async_helpers.bulk(client=self.es,
+        #                                 actions=map(dm, chunk),  # todo: 实际读取后置
+        #                                 max_retries=3,
+        #                                 initial_backoff=0.1,
+        #                                 max_backoff=1,
+        #                                 params=params,
+        #                                 semaphore=self.semaphore) async for chunk in chunks]):
+        #         self._processed += len(succeed) + len(failed)
+        #         print('succeed:', len(succeed), 'failed:', len(failed))
+        #
+        asyncio.ensure_future(t(docs))
 
     async def _send_buffered_actions(self, action_buffer, action_log_block, refresh=False):
         """Send buffered actions to Elasticsearch"""
@@ -322,8 +340,9 @@ class DocManager(DocManagerBase):
 
     async def stop(self):
         """Stop auto committer"""
-        await self.auto_committer.stop()
-        await asyncio.sleep(5)
+        # todo: 完整处理stop，定义scope
+        self.auto_committer.stop()
+        await asyncio.sleep(1)
         # all_tasks = asyncio.all_tasks(asyncio.get_event_loop())
         # asyncio.ensure_future(asyncio.wait(all_tasks))
         await self.es.transport.close()
@@ -373,7 +392,7 @@ class AutoCommitter:
             except Exception as e:
                 print(e)
 
-    async def stop(self):
+    def stop(self):
         self._stopped = True
 
     def skip_next(self):

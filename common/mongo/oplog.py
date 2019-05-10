@@ -73,7 +73,6 @@ class Oplog(EventEmitter):
                     if self._close:
                         return
                     try:
-                        # todo 同一个事件中的任何listener抛异常都会影响其他listener执行，进行隔离，但是要做好异常处理
                         # emit event 'data'
                         self.emit('data', doc)
                         # emit event 'op'

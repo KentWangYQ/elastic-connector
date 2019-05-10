@@ -24,7 +24,7 @@ logger.addHandler(ch)
 
 class Sync:
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(mongo_docman.auto_committer.stop())  # todo: 优雅处理
+    mongo_docman.auto_committer.stop()
 
     def index_all(self):
         sync.delete_index()
