@@ -64,4 +64,5 @@ class Sync:
         else:
             print('Invalidate type, indices must be str or tuple.')
 
-# fire.Fire(Sync)
+
+fire.Fire(Sync)

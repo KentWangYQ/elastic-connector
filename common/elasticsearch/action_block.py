@@ -67,7 +67,7 @@ class ActionLogBlock:
 
     def to_dict(self):
         return {
-            'id': self.id,
+            '_id': self.id,
             'prev_block_hash': self.prev_block_hash,
             'create_time': self.create_time,
             'actions': self.actions,

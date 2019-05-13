@@ -3,18 +3,21 @@ import sys
 import pickle
 import bson.timestamp
 import asyncio
+import logging
 import elasticsearch
 import elasticsearch_async
 from math import ceil
 from datetime import datetime
 from aiostream import stream
 from common.elasticsearch import async_helpers
-from common.elasticsearch.action_log import SVActionLogBlock, ActionLogBlockStatus, GENESIS_BLOCK
+from common.elasticsearch.action_block import SVActionLogBlock, ActionLogBlockStatus, GENESIS_BLOCK
 from common.elasticsearch.bson_serializer import BSONSerializer
 from common import util
 from . import constant
 from .doc_manager_base import DocManagerBase
 from .formatters import DefaultDocumentFormatter
+
+logger = logging.getLogger(__name__)
 
 
 class ElasticOperate:
@@ -82,7 +85,45 @@ class DocManager(DocManagerBase):
         index, doc_type = namespace.lower().split('.', 1)
         return index, doc_type
 
+    def _gen_action(self, op_type, namespace, timestamp, doc, gen_log=True):
+        action_log = {'ns': namespace,
+                      'ts': timestamp,
+                      'op': op_type,
+                      'doc': doc} if gen_log else None
+
+        index, doc_type = self._index_and_mapping(namespace)
+        action = {
+            '_op_type': op_type,
+            '_index': index,
+            '_type': doc_type
+        }
+
+        for key in ('_index', '_parent', '_percolate', '_routing', '_timestamp',
+                    '_type', '_version', '_version_type', '_id',
+                    '_retry_on_conflict', 'pipeline'):
+            if key in doc:
+                action[key] = doc.pop(key)
+
+        # ObjectId to str
+        for key in ('_parent', '_id'):
+            if key in action and not isinstance(action[key], str):
+                action[key] = str(action[key])
+
+        action['_source'] = doc
+
+        return action, action_log
+
     def _action_merge(self, pre_action, original_action):
+        """
+        Merge actions for same doc in the actions block
+
+        Actions supported:
+            - index
+            - update
+        :param pre_action:
+        :param original_action:
+        :return:
+        """
         if pre_action:
             # 处理_op_type:
             # 1. (pre_op_type, _original_op_type)存在'index'，则为'index';
@@ -114,36 +155,21 @@ class DocManager(DocManagerBase):
         :param is_update:
         :return:
         """
-        index, doc_type = self._index_and_mapping(namespace)
-        _o_id = doc.pop('_id', '')
-        _parent = str(doc.pop('_parent', ''))
+        # if param doc_id gaven, use it as doc id
+        if doc_id:
+            doc['_id'] = doc_id
 
-        doc_id = str(doc_id or _o_id)
-        doc['doc_id'] = doc_id
-
-        _original_op_type = ElasticOperate.update if is_update else ElasticOperate.index
-        _op_type = _original_op_type
-
+        # Get operate type, 'index' and 'update' was supported in this function
+        _op_type = ElasticOperate.update if is_update else ElasticOperate.index
+        # format doc
         doc = self._formatter.format_document(doc)
-
+        # Generate the action and action log by doc info
+        action, action_log = self._gen_action(_op_type, namespace, timestamp, doc)
+        # Get actions for the doc in bulk buffer
         pre_action = self.bulk_buffer.get_action(doc_id)
-
-        action = self._action_merge(pre_action, {
-            '_op_type': _op_type,
-            '_index': index,
-            '_type': doc_type,
-            '_id': doc_id,
-            '_source': doc
-        })
-
-        if _parent:
-            action['_parent'] = _parent
-
-        action_log = {**{'ns': namespace,
-                         'ts': timestamp,
-                         'op': _original_op_type
-                         },
-                      **doc}
+        # Merge the pre_action in bulk buffer and current action
+        action = self._action_merge(pre_action, action)
+        # Push new action to bulk buffer
         self._push_to_buffer(action, action_log)
 
     def _push_to_buffer(self, action, action_log):
@@ -157,7 +183,7 @@ class DocManager(DocManagerBase):
         # push action to buffer
         self.bulk_buffer.add_action(action, action_log)
 
-        #
+        # when bulk buffer has generated a block or commit interval is 0, commit immediately.
         if self.bulk_buffer.blocks or self.auto_commit_interval == 0:
             # commit
             self.auto_committer.skip_next()
@@ -184,7 +210,7 @@ class DocManager(DocManagerBase):
         """
         self._upsert(doc, namespace, timestamp, doc_id=doc_id, is_update=True)
 
-    def delete(self, doc_id, namespace, timestamp):
+    def delete(self, doc_id, namespace, timestamp=util.utc_now()):
         """
         Delete document by doc_id
         :param doc_id:
@@ -192,22 +218,35 @@ class DocManager(DocManagerBase):
         :param timestamp:
         :return:
         """
-        index, doc_type = self._index_and_mapping(namespace)
-        _op_type = 'delete'
-        action = {
-            '_op_type': _op_type,
-            '_index': index,
-            '_type': doc_type,
-            '_id': doc_id
-        }
-
-        action_log = {
-            'ns': namespace,
-            'ts': timestamp,
-            'op': _op_type,
-            'doc_id': doc_id
-        }
+        action, action_log = self._gen_action(ElasticOperate.delete, namespace, timestamp, {'_id': doc_id})
         self._push_to_buffer(action, action_log)
+
+    async def _chunk(self, actions, chunk_size, params):
+        futures = []
+        async with stream.chunks(actions, chunk_size).stream() as chunks:
+            async for chunk in chunks:
+                logger.debug('Elasticsearch bulk chunk size: ', len(chunk))
+                for future in [future for future in futures if future.done()]:
+                    # return all done future's result
+                    yield future.result()
+                    # remove future from futures list after yield result
+                    futures.remove(future)
+
+                logger.debug('Elasticsearch async helper bulk semaphore value: ', semaphore._value)
+                await self.semaphore.acquire()
+                future = async_helpers.bulk(client=self.es,
+                                            actions=chunk,
+                                            max_retries=3,
+                                            initial_backoff=0.3,
+                                            max_backoff=3,
+                                            params=params,
+                                            semaphore=self.semaphore)
+                futures.append(asyncio.ensure_future(future))
+
+            # await for all future complete
+            done, _ = await asyncio.wait(futures)
+            for future in done:
+                yield future.result()
 
     async def bulk_index(self, docs, namespace, params=None, chunk_size=None):
         """
@@ -216,60 +255,24 @@ class DocManager(DocManagerBase):
         """
         if not docs:
             return None
-        index, doc_type = self._index_and_mapping(namespace)
 
-        def dm(doc):
-            # async for doc in docs:
-            _parent = str(doc.pop('_parent', ''))
-            action = {
-                '_op_type': ElasticOperate.index,
-                '_index': index,
-                '_type': doc_type,
-                '_id': str(doc.pop('_id', '')),
-                '_source': doc
-            }
-            if _parent:
-                action['_parent'] = _parent
-            return action
+        # def gen_action(doc):
+        #     action, _ = self._gen_action(ElasticOperate.index, namespace, util.utc_now(), doc, False)
+        #     return action
 
-        # async with stream.chunks(docs, chunk_size or self.chunk_size).stream() as chunks:
-
-        async def t(chunk):  # todo 重构\
-            async for (succeed, failed) in async_helpers.bulk(client=self.es,
-                                                              actions=chunk,  # todo: 实际读取后置
-                                                              max_retries=3,
-                                                              initial_backoff=0.1,
-                                                              max_backoff=1,
-                                                              params=params,
-                                                              expand_action_callback=dm,
-                                                              semaphore=self.semaphore):
-                # print(result)
+        async def bulk(docs):
+            async for (succeed, failed) in self._chunk(actions=docs, chunk_size=self.chunk_size, params=params):
                 print('succeed:', len(succeed), 'failed:', len(failed))
 
-        # async for chunk in stream.chunks(docs, chunk_size or self.chunk_size).stream():
-        #     print(1)
-        #     future = asyncio.ensure_future(t(chunk))
-        #     await asyncio.wait([future])
-        #     await asyncio.wait([future])
-
-        # async with stream.chunks(docs, chunk_size or self.chunk_size).stream() as chunks:
-        #     async for (succeed, failed) in asyncio.as_completed(
-        #             [async_helpers.bulk(client=self.es,
-        #                                 actions=map(dm, chunk),  # todo: 实际读取后置
-        #                                 max_retries=3,
-        #                                 initial_backoff=0.1,
-        #                                 max_backoff=1,
-        #                                 params=params,
-        #                                 semaphore=self.semaphore) async for chunk in chunks]):
-        #         self._processed += len(succeed) + len(failed)
-        #         print('succeed:', len(succeed), 'failed:', len(failed))
-        #
-        asyncio.ensure_future(t(docs))
+        return asyncio.ensure_future(bulk(stream.map(
+            docs,
+            lambda doc: self._gen_action(ElasticOperate.index, namespace, util.utc_now(), doc, False)[0])))
 
     async def _send_buffered_actions(self, action_buffer, action_log_block, refresh=False):
         """Send buffered actions to Elasticsearch"""
         # future for index log block
-        logs_future = self._send_action_log_block(action_log_block)
+        logs_future = asyncio.ensure_future(self._log_block_commit(action_log_block))
+
         # future for bulk actions
         actions_future = asyncio.ensure_future(
             async_helpers.bulk(client=self.es, actions=action_buffer, max_retries=3,
@@ -279,45 +282,54 @@ class DocManager(DocManagerBase):
         await asyncio.wait([logs_future, actions_future])
 
         # bulk result which is a tuple for succeed and failed actions: (succeed, failed)
-        succeed, failed = actions_future.result()
-        self._processed += len(succeed) + len(failed)
-        print('succeed:', len(succeed), 'failed:', len(failed))
-        # print(succeed, failed)
+        async for succeed, failed in actions_future.result():
+            self._processed += len(succeed) + len(failed)
+            print('succeed:', len(succeed), 'failed:', len(failed))
 
         # commit log block result
-        await self._commit_log(action_log_block, failed)
+        log_block_done_future = asyncio.ensure_future(self._log_block_done(action_log_block))
+        failed_actions_commit_future = asyncio.ensure_future(self._failed_actions_commit(failed))
+
+        await asyncio.wait([log_block_done_future, failed_actions_commit_future])
+
         if refresh:
             await self.es.indices.refresh()
 
-    def send_buffered_actions(self, refresh=False):
-        # get action buffer and operate log block
+    def commit(self, refresh=False):
+        """Send bulk buffer to Elasticsearch, then refresh."""
+        # send
         action_buffer, action_log_block = self.bulk_buffer.get_buffer()
 
         if action_buffer and action_log_block:
             asyncio.ensure_future(self._send_buffered_actions(action_buffer, action_log_block, refresh))
 
-    def _send_action_log_block(self, block):
-        action_log = {
-            '_op_type': ElasticOperate.index,
-            '_index': self.log_index,
-            '_type': self.log_type,
-            '_id': block.id,
-            '_source': block.to_dict()
-        }
-        return asyncio.ensure_future(async_helpers.bulk(client=self.es, actions=[action_log], max_retries=3,
-                                                        initial_backoff=0.1,
-                                                        max_backoff=1))
+    # def _send_action_log_block(self, block):
+    #     # action_log = {
+    #     #     '_op_type': ElasticOperate.index,
+    #     #     '_index': self.log_index,
+    #     #     '_type': self.log_type,
+    #     #     '_id': block.id,
+    #     #     '_source': block.to_dict()
+    #     # }
+    #     action, _ = self._gen_action(ElasticOperate.index, '.'.join([self.log_index, self.log_type]), util.utc_now(),
+    #                                  block.to_dict(), gen_log=False)
+    #     return asyncio.ensure_future(async_helpers.bulk(client=self.es, actions=[action], max_retries=3,
+    #                                                     initial_backoff=0.1,
+    #                                                     max_backoff=1))
 
-    def _commit_log(self, block, failed):
-        def _emf(info):
-            return {
-                '_op_type': ElasticOperate.index,
-                '_index': self.error_index,
-                '_type': self.error_type,
-                '_source': info
-            }
+    async def _log_block_commit(self, block):
+        action, _ = self._gen_action(ElasticOperate.index, '.'.join([self.log_index, self.log_type]), util.utc_now(),
+                                     block.to_dict(), gen_log=False)
+        async for succeed, failed in async_helpers.bulk(client=self.es, actions=[action], max_retries=3,
+                                                        initial_backoff=0.1, max_backoff=1):
+            if succeed:
+                print('Log block commit success')
+            else:
+                print('Log block commit failed')
+            break
 
-        log_commit = {
+    def _log_block_done(self, block):
+        block_done_action = {
             '_op_type': ElasticOperate.update,
             '_index': self.log_index,
             '_type': self.log_type,
@@ -327,16 +339,44 @@ class DocManager(DocManagerBase):
                 'actions': []
             }}
         }
-        actions = [log_commit]
-        actions.extend(map(_emf, failed))
-        return asyncio.ensure_future(async_helpers.bulk(client=self.es, actions=actions, max_retries=3,
-                                                        initial_backoff=0.1,
-                                                        max_backoff=1))
 
-    def commit(self):
-        """Send bulk buffer to Elasticsearch, then refresh."""
-        # send
-        self.send_buffered_actions(refresh=True)
+        return async_helpers.bulk(client=self.es, actions=[block_done_action], max_retries=3, initial_backoff=0.1,
+                                  max_backoff=1)
+
+    def _failed_actions_commit(self, failed_actions):
+        return async_helpers.bulk(client=self.es, actions=map(lambda action: {
+            '_op_type': ElasticOperate.index,
+            '_index': self.error_index,
+            '_type': self.error_type,
+            '_source': action
+        }, failed_actions), max_retries=3,
+                                  initial_backoff=0.1,
+                                  max_backoff=1)
+
+    # def _commit_log(self, block, failed):
+    #     def _emf(info):
+    #         return {
+    #             '_op_type': ElasticOperate.index,
+    #             '_index': self.error_index,
+    #             '_type': self.error_type,
+    #             '_source': info
+    #         }
+    #
+    #     log_commit = {
+    #         '_op_type': ElasticOperate.update,
+    #         '_index': self.log_index,
+    #         '_type': self.log_type,
+    #         '_id': block.id,
+    #         '_source': {'doc': {
+    #             'status': ActionLogBlockStatus.done,
+    #             'actions': []
+    #         }}
+    #     }
+    #     actions = [log_commit]
+    #     actions.extend(map(_emf, failed))
+    #     return asyncio.ensure_future(async_helpers.bulk(client=self.es, actions=actions, max_retries=3,
+    #                                                     initial_backoff=0.1,
+    #                                                     max_backoff=1))
 
     async def stop(self):
         """Stop auto committer"""
@@ -381,10 +421,10 @@ class AutoCommitter:
         while not self._stopped:
             if not self._skip_next:
                 if self._auto_commit:
-                    self.docman.commit()
+                    self.docman.commit(refresh=True)
 
                 elif self._auto_send:
-                    self.docman.send_buffered_actions()
+                    self.docman.commit()
             self._skip_next = False
             try:
                 await asyncio.sleep(self._sleep_interval)

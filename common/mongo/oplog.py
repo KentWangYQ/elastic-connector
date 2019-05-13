@@ -1,3 +1,4 @@
+import logging
 import bson
 import asyncio
 import pymongo
@@ -5,6 +6,8 @@ import motor.motor_asyncio
 
 import config
 from common.event_emitter import EventEmitter
+
+logger = logging.getLogger(__name__)
 
 
 def _filter(*, ts=None, ns=None, include_ns=None, exclude_ns=None, op=None, include_ops=None, exclude_ops=None):
@@ -50,6 +53,7 @@ class Oplog(EventEmitter):
 
         @self.on('i_error')
         def i_error(e, *args, **kwargs):
+            logger.warning('Oplog listener process error', e, *args, **kwargs)
             self.emit('error', e, *args, **kwargs)
 
     _op_mapping = {
@@ -81,13 +85,15 @@ class Oplog(EventEmitter):
                         self.emit('%s_%s' % (Oplog._get_coll(doc.get('ns')), self._op_mapping[doc.get('op')]), doc)
                         self._filter['ts'] = doc['ts']
                     except Exception as e:
+                        logger.warning('Oplog tail error', e)
                         self.emit('error', e, doc)
 
             await asyncio.sleep(1)
             cursor.close()
+        logger.info('Oplog tail closed')
 
     def close(self):
-        print('oplog closing ...')
+        logger.info('Oplog tail closing ...')
         self._close = True
 
     @staticmethod
