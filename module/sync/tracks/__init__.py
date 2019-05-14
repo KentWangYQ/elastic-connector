@@ -1,3 +1,4 @@
+import logging
 import pydash as _
 from common.mongo import oplog_client
 from common.elasticsearch.doc_manager import mongo_docman
@@ -6,6 +7,8 @@ from ..sync_manager import SyncManager
 from module.constant import mapping
 
 from . import track_util
+
+logger = logging.getLogger('rts')
 
 _map = mapping.tracks
 _index = _map.get('index')
@@ -50,14 +53,15 @@ def create_index():
             'mappings': _mappings,
             'settings': _settings
         })
-
-        # todo: 处理结果
+        if not res or not res.get('acknowledged') is True:
+            logger.error('Create indies failed', res)
+            raise Exception('Create indies failed', res)  # todo: 抽象异常
 
 
 async def index_all():
     await merchant_sync_manager.index_all()
-    await impression_track_sync_manager.index_all(doc_process_func=_it_doc_process)
-    await act_share_detail_sync_manager.index_all(doc_process_func=_it_doc_process)
+    # await impression_track_sync_manager.index_all(doc_process_func=_it_doc_process)
+    # await act_share_detail_sync_manager.index_all(doc_process_func=_it_doc_process)
 
 
 def delete_all():
@@ -66,8 +70,10 @@ def delete_all():
     act_share_detail_sync_manager.delete_all()
 
 
-def delete_index():
+def delete_indies():
     merchant_sync_manager.delete_index()
+    impression_track_sync_manager.delete_index()
+    act_share_detail_sync_manager.delete_index()
 
 
 def real_time_sync():

@@ -1,15 +1,18 @@
 import fire
+import sys
 import asyncio
 from common.elasticsearch.doc_manager import mongo_docman
 from module import sync
 
 import logging
 
-logger = logging.getLogger('elasticsearch')
+# todo: 统筹logging handler
+logger = logging.getLogger('rts')
+
 logger.setLevel(logging.INFO)
 
 # create console handler and set level to debug
-ch = logging.StreamHandler()
+ch = logging.StreamHandler(sys.stdout)
 ch.setLevel(logging.INFO)
 
 # create formatter
@@ -23,28 +26,25 @@ logger.addHandler(ch)
 
 
 class Sync:
-    loop = asyncio.get_event_loop()
-    mongo_docman.auto_committer.stop()
+    def __init__(self):
+        print(logger.handlers)
+        self.loop = asyncio.get_event_loop()
+        self.loop.run_until_complete(mongo_docman.auto_committer.stop())
 
     def index_all(self):
-        sync.delete_index()
+        sync.delete_indies()
         sync.create_index()
         mongo_docman.log_block_chain.mark_ts()
 
         self.loop.run_until_complete(sync.index_all())
-
-        all_tasks = asyncio.all_tasks(asyncio.get_event_loop())
-        self.loop.run_until_complete(asyncio.wait(all_tasks))
-
         self.loop.run_until_complete(mongo_docman.stop())
-
         self.loop.close()
 
     def index(self, *indices):
         if isinstance(indices, tuple):
             for idx in indices:
                 if not hasattr(sync, idx):
-                    print('Invalid index "{0}"'.format(idx))
+                    logger.error('Invalid index "{0}"'.format(idx))
                     return
             for idx in indices:
                 getattr(sync, idx).delete_index()
@@ -59,10 +59,12 @@ class Sync:
 
             self.loop.run_until_complete(mongo_docman.stop())
 
+            self.loop.run_until_complete(self.loop.shutdown_asyncgens())
+
             self.loop.close()
 
         else:
-            print('Invalidate type, indices must be str or tuple.')
+            logger.error('Invalidate type, indices must be str or tuple.')
 
 
 fire.Fire(Sync)

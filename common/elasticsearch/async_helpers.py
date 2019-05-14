@@ -1,7 +1,6 @@
 import logging
 import asyncio
 from operator import methodcaller
-from aiostream import stream
 from elasticsearch_async import AsyncElasticsearch
 from elasticsearch.exceptions import *
 from common import util
@@ -10,7 +9,7 @@ DEFAULT_CHUNK_SIZE = 2000
 DEFAULT_CHUNK_BYTES = 100 * 1024 * 1024
 NO_RETRY_EXCEPTIONS = [SSLError, NotFoundError, AuthenticationException, AuthorizationException]
 STRING_TYPES = str, bytes
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('rts')
 
 
 def expand_action(data):
@@ -175,10 +174,9 @@ async def _process_bulk_chunk(client: AsyncElasticsearch,
     return succeed, failed
 
 
-# todo: chunk 参数constant化
-async def _bulk(client, actions, chunk_size=DEFAULT_CHUNK_SIZE, max_chunk_bytes=DEFAULT_CHUNK_BYTES,
-                expand_action=expand_action, max_retries=0, initial_backoff=2,
-                max_backoff=600, semaphore=None, **kwargs):
+async def bulk(client, actions, chunk_size=DEFAULT_CHUNK_SIZE, max_chunk_bytes=DEFAULT_CHUNK_BYTES,
+               expand_action=expand_action, max_retries=0, initial_backoff=2,
+               max_backoff=600, semaphore=None, **kwargs):
     """
     async helper for the :meth:`~elasticsearch.Elasticsearch.bulk` api that provides
     a more human friendly interface - it consumes an iterator of actions and
@@ -223,42 +221,42 @@ async def _bulk(client, actions, chunk_size=DEFAULT_CHUNK_SIZE, max_chunk_bytes=
     return succeed, failed
 
 
-async def bulk(client, actions, chunk_size=DEFAULT_CHUNK_SIZE, max_chunk_bytes=DEFAULT_CHUNK_BYTES,
-               expand_action=expand_action, max_retries=0, initial_backoff=2,
-               max_backoff=600, semaphore=None, **kwargs):
-    """
-
-    :param client:
-    :param actions:
-    :param chunk_size:
-    :param max_chunk_bytes:
-    :param expand_action:
-    :param max_retries:
-    :param initial_backoff:
-    :param max_backoff:
-    :param semaphore: use for request traffic restriction
-    :param kwargs:
-    :return:
-    """
-    futures = []
-
-    async with stream.chunks(actions, chunk_size).stream() as chunks:
-        async for chunk in chunks:
-            logger.debug('Elasticsearch bulk chunk size: ', len(chunk))
-            for future in [future for future in futures if future.done()]:
-                # return all done future's result
-                yield future.result()
-                # remove future from futures list after yield result
-                futures.remove(future)
-
-            logger.debug('Elasticsearch async helper bulk semaphore value: ', semaphore._value)
-            await semaphore.acquire()
-            future = _bulk(client, chunk, chunk_size, max_chunk_bytes,
-                           expand_action, max_retries, initial_backoff,
-                           max_backoff, semaphore, **kwargs)
-            futures.append(asyncio.ensure_future(future))
-
-        # await for all future complete
-        done, _ = await asyncio.wait(futures)
-        for future in done:
-            yield future.result()
+# async def _bulk(client, actions, chunk_size=DEFAULT_CHUNK_SIZE, max_chunk_bytes=DEFAULT_CHUNK_BYTES,
+#                 expand_action=expand_action, max_retries=0, initial_backoff=2,
+#                 max_backoff=600, semaphore=None, **kwargs):
+#     """
+#
+#     :param client:
+#     :param actions:
+#     :param chunk_size:
+#     :param max_chunk_bytes:
+#     :param expand_action:
+#     :param max_retries:
+#     :param initial_backoff:
+#     :param max_backoff:
+#     :param semaphore: use for request traffic restriction
+#     :param kwargs:
+#     :return:
+#     """
+#     futures = []
+#
+#     async with stream.chunks(actions, chunk_size).stream() as chunks:
+#         async for chunk in chunks:
+#             logger.debug('Elasticsearch bulk chunk size: ', len(chunk))
+#             for future in [future for future in futures if future.done()]:
+#                 # return all done future's result
+#                 yield future.result()
+#                 # remove future from futures list after yield result
+#                 futures.remove(future)
+#
+#             logger.debug('Elasticsearch async helper bulk semaphore value: ', semaphore._value)
+#             await semaphore.acquire()
+#             future = _bulk(client, chunk, chunk_size, max_chunk_bytes,
+#                            expand_action, max_retries, initial_backoff,
+#                            max_backoff, semaphore, **kwargs)
+#             futures.append(asyncio.ensure_future(future))
+#
+#         # await for all future complete
+#         done, _ = await asyncio.wait(futures)
+#         for future in done:
+#             yield future.result()

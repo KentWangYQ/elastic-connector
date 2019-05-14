@@ -7,7 +7,7 @@ import motor.motor_asyncio
 import config
 from common.event_emitter import EventEmitter
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('rts')
 
 
 def _filter(*, ts=None, ns=None, include_ns=None, exclude_ns=None, op=None, include_ops=None, exclude_ops=None):

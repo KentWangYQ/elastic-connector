@@ -1,5 +1,8 @@
+import logging
 from inspect import isfunction
 from module import constant
+
+logger = logging.getLogger('rts')
 
 
 class SyncManager:
@@ -84,7 +87,7 @@ class SyncManager:
         return self.mongo_docman.delete(oplog.get('o').get('_id'), namespace=self.namespace, timestamp=oplog.get('ts'))
 
     def real_time_sync(self, ops=('i', 'u', 'd'), doc_process_funcs=None):
-        # todo: 增加log
+        logger.info('[RTS register]: ns: %s op: %s' % (self.namespace, ','.join(ops)))
         if 'i' in ops:
             @self.oplog_client.on('%s_insert' % self.collection.name)
             def on_insert(oplog):
