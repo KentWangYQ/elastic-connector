@@ -53,14 +53,7 @@ class Sync:
             future = asyncio.wait([getattr(sync, idx).index_all() for idx in indices])
 
             self.loop.run_until_complete(future)
-
-            all_tasks = asyncio.all_tasks(asyncio.get_event_loop())
-            self.loop.run_until_complete(asyncio.wait(all_tasks))
-
             self.loop.run_until_complete(mongo_docman.stop())
-
-            self.loop.run_until_complete(self.loop.shutdown_asyncgens())
-
             self.loop.close()
 
         else:

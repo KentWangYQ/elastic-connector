@@ -732,4 +732,4 @@ class BlockChain:
         :return:
         """
         self.docman.delete_index('.'.join([self.docman.log_index, self.docman.log_type]))
-        logging.info('Log block chain cleared')
+        logger.info('Log block chain cleared')

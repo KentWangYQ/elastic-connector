@@ -20,7 +20,7 @@ async def index_all():
 
 def delete_indies():
     tracks.delete_indies()
-    logging.info('All indies deleted')
+    logger.info('All indies deleted')
 
 
 def delete_all():
