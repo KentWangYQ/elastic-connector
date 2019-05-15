@@ -29,7 +29,7 @@ def expand_action(data):
     for key in ('_index', '_parent', '_percolate', '_routing', '_timestamp',
                 '_type', '_version', '_version_type', '_id',
                 '_retry_on_conflict', 'pipeline'):
-        if key in data:
+        if key in data and data.get(key) is not None:
             action[op_type][key] = data.pop(key)
 
     # no data payload for delete

@@ -150,7 +150,7 @@ class DocManager(DocManagerBase):
             original_action['_source'] = _source
         else:
             if original_action.get('_op_type') == ElasticOperate.update:
-                original_action['_source'] = {'doc': original_action.get('_source')}
+                original_action['_source'] = {'doc': self.apply_update({}, original_action.get('_source'))}
 
         return original_action
 
@@ -273,6 +273,8 @@ class DocManager(DocManagerBase):
         if doc_process:
             docs = stream.map(docs, doc_process)
 
+        docs = stream.map(docs, self._formatter.format_document)
+
         async def bulk(docs):
             succeed_total, failed_total = 0, 0
             async for (succeed, failed) in self._chunk(actions=docs, chunk_size=self.chunk_size, params=params):
@@ -310,7 +312,17 @@ class DocManager(DocManagerBase):
                                initial_backoff=0.1,
                                max_backoff=1))
         self.monitor.increase_processed(len(action_buffer))
-        logger.info('[Bulk] succeed:%d' % len(succeed))
+        if succeed:
+            logger.info('[Bulk] succeed:%d' % len(succeed))
+        if failed:
+            logger.warning('[Bulk] failed:%d' % len(failed))
+
+        if failed:
+            _, failed = await asyncio.ensure_future(self._failed_actions_commit(failed))
+            if not failed:
+                logger.debug('Failed actions commit success')
+            else:
+                logger.warning('Failed actions commit failed')
 
         # commit log block result
         succeed, failed = await asyncio.ensure_future(self._log_block_done(action_log_block))
@@ -318,14 +330,6 @@ class DocManager(DocManagerBase):
             logger.debug('Mark log block done success')
         else:
             logger.warning('Mark log block done failed')
-
-        if failed:
-            logger.warning('[Bulk] failed:%d' % len(failed))
-            _, failed = await asyncio.ensure_future(self._failed_actions_commit(failed))
-            if not failed:
-                logger.debug('Failed actions commit success')
-            else:
-                logger.warning('Failed actions commit failed')
 
         if refresh:
             await self.es.indices.refresh()
@@ -527,7 +531,7 @@ class BulkBuffer:
         self.bulk_index(action, action_log)
 
     def get_action(self, _id):
-        return self.action_buffer.get(_id)
+        return self.action_buffer.get(str(_id))
 
     def bulk_index(self, action, action_log):
         action['_i'] = self._get_i()
@@ -690,30 +694,42 @@ class BlockChain:
                                             body=first_non_valid_block_query_body)
             t = util.utc_now_str()
             if rn.get('hits').get('total') > 0:
-                t = rn.get('hits').get('hits')[0].get('_source').get('create_time', {}).get('$date') or t
+                t = util.datetime2str(rn.get('hits').get('hits')[0].get('_source').get('create_time', {})) or t
 
+            self._clean_invalid_block(t)
+
+            # last_valid_block_query_body = {
+            #     "size": 1,
+            #     "query": {
+            #         "bool": {
+            #             "must": [
+            #                 {
+            #                     "term": {
+            #                         "status.keyword": {
+            #                             "value": ActionLogBlockStatus.done
+            #                         }
+            #                     }
+            #                 },
+            #                 {
+            #                     "range": {
+            #                         "create_time.$date": {
+            #                             "lt": t
+            #                         }
+            #                     }
+            #                 }
+            #             ]
+            #         }
+            #     },
+            #     "sort": [
+            #         {
+            #             "create_time.$date": {
+            #                 "order": "desc"
+            #             }
+            #         }
+            #     ]
+            # }
             last_valid_block_query_body = {
                 "size": 1,
-                "query": {
-                    "bool": {
-                        "must": [
-                            {
-                                "term": {
-                                    "status.keyword": {
-                                        "value": ActionLogBlockStatus.done
-                                    }
-                                }
-                            },
-                            {
-                                "range": {
-                                    "create_time.$date": {
-                                        "lt": t
-                                    }
-                                }
-                            }
-                        ]
-                    }
-                },
                 "sort": [
                     {
                         "create_time.$date": {
@@ -734,6 +750,20 @@ class BlockChain:
             logger.info('Get last block success')
 
         return block
+
+    def _clean_invalid_block(self, start_time):
+        self.docman.delete_by_query_sync(namespace='.'.join([self.docman.log_index, self.docman.log_type]),
+                                         body={
+                                             "query": {
+                                                 "range": {
+                                                     "create_time.$date": {
+                                                         "gte": start_time
+                                                     }
+                                                 }
+                                             }
+                                         })
+        self.docman.es_sync.indices.refresh()
+        logger.info('Invalid log block was cleaned')
 
     def _gen_sv_block_from_dict(self, obj):
         block = SVActionLogBlock(prev_block_hash=obj.get('prev_block_hash'),

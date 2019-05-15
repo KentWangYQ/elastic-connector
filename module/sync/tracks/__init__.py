@@ -30,12 +30,14 @@ merchant_sync_manager = SyncManager(oplog_client,
 impression_track_sync_manager = SyncManager(oplog_client,
                                             mongo_docman,
                                             collection=impression_track,
-                                            namespace=_types.get('impression_track').get('namespace'))
+                                            namespace=_types.get('impression_track').get('namespace'),
+                                            routing=_routing)
 
 act_share_detail_sync_manager = SyncManager(oplog_client,
                                             mongo_docman,
                                             collection=act_share_detail,
-                                            namespace=_types.get('act_share_detail').get('namespace'))
+                                            namespace=_types.get('act_share_detail').get('namespace'),
+                                            routing=_routing)
 
 
 def _it_doc_process(doc):
@@ -61,8 +63,8 @@ def create_index():
 
 async def index_all():
     await merchant_sync_manager.index_all()
-    await impression_track_sync_manager.index_all(doc_process_func=_it_doc_process)
-    await act_share_detail_sync_manager.index_all(doc_process_func=_it_doc_process)
+    # await impression_track_sync_manager.index_all(doc_process_func=_it_doc_process)
+    # await act_share_detail_sync_manager.index_all(doc_process_func=_it_doc_process)
 
 
 def delete_all():

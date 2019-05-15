@@ -35,7 +35,7 @@ class SyncManager:
         self.query_options = query_options or {}
         if 'batch_size' not in self.query_options:
             self.query_options['batch_size'] = constant.MONGO_BATCH_SIZE
-        self.routing = kwargs.get('_routing')
+        self.routing = kwargs.get('routing')
 
     async def index_all(self, doc_process_func=None):
         """
@@ -90,6 +90,10 @@ class SyncManager:
 
     def real_time_sync(self, ops=('i', 'u', 'd'), doc_process_funcs=None):
         logger.info('[RTS register]: ns: %s op: %s' % (self.namespace, ','.join(ops)))
+        if not doc_process_funcs:
+            doc_process_funcs = {}
+        assert isinstance(doc_process_funcs, dict)
+
         if 'i' in ops:
             @self.oplog_client.on('%s_insert' % self.collection.name)
             def on_insert(oplog):
@@ -103,4 +107,4 @@ class SyncManager:
         if 'd' in ops:
             @self.oplog_client.on('%s_delete' % self.collection.name)
             def on_delete(oplog):
-                return self.delete_doc(oplog, doc_process_funcs.get('d'))
+                return self.delete_doc(oplog)

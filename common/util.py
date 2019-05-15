@@ -6,7 +6,7 @@ def utc_now():
 
 
 def utc_now_str():
-    return datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+    return datetime2str(datetime.utcnow())
 
 
 def now_timestamp_s():
@@ -23,3 +23,7 @@ def utc_now_timestamp_s():
 
 def utc_now_timestamp_ms():
     return int(datetime.utcnow().timestamp() * 1000)
+
+
+def datetime2str(dt):
+    return dt.strftime('%Y-%m-%dT%H:%M:%S.%fZ')

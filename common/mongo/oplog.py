@@ -90,7 +90,7 @@ class Oplog(EventEmitter):
                         self.emit(self._op_mapping[doc.get('op')], doc)
                         # emit event 'coll_op'
                         self.emit('%s_%s' % (Oplog._get_coll(doc.get('ns')), self._op_mapping[doc.get('op')]), doc)
-                        self._filter['ts'] = doc['ts']
+                        self._filter['ts'] = doc.get('ts')
                     except Exception as e:
                         logger.warning('[Oplog] %r', e)
                         self.emit('error', e, doc)
