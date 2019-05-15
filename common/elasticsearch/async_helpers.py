@@ -108,8 +108,7 @@ async def _process_bulk_chunk(client: AsyncElasticsearch,
         try:
             result = await future
         except TransportError as e:
-            # todo: process error 429
-            logger.warning('Elasticsearch bulk transport error', e)
+            logger.warning('[Elasticsearch] %r', e)
             if type(e) in NO_RETRY_EXCEPTIONS or attempted > max_retries:
                 # if we are not propagating, mark all actions in current chunk as failed
                 err_message = str(e)
@@ -123,7 +122,7 @@ async def _process_bulk_chunk(client: AsyncElasticsearch,
                     info['action'] = action
                     failed.append(info)
         except Exception as e:
-            logger.warning('Elasticsearch bulk error', e)
+            logger.warning('[AsyncHelper] %r', e)
             if attempted > max_retries:
                 # if we are not propagating, mark all actions in current chunk as failed
                 err_message = str(e)
@@ -131,10 +130,9 @@ async def _process_bulk_chunk(client: AsyncElasticsearch,
                 for data in bulk_data:
                     # collect all the information about failed actions
                     op_type, action = data[0].copy().popitem()
-                    info = {"error": err_message, "status": 500, "create_time": util.utc_now()}
-                    if op_type != 'delete':
-                        info['data'] = data[1]
-                    info['action'] = action
+                    info = {"error": err_message, "status": 500, "create_time": util.utc_now(), "action": action}
+                    # if op_type != 'delete':
+                    #     info['data'] = data[1]
                     failed.append(info)
         else:
             to_retry, to_retry_data = [], []
@@ -150,7 +148,7 @@ async def _process_bulk_chunk(client: AsyncElasticsearch,
                             'error': str(info.get('error')),
                             'status': info.get('status'),
                             'action': action,
-                            'data': data,
+                            # 'data': data,
                             'create_time': util.utc_now()
                         }
                         failed.append(info)
@@ -165,11 +163,11 @@ async def _process_bulk_chunk(client: AsyncElasticsearch,
             if not to_retry:
                 # all success, no need to retry
                 break
-
-        delay = min(max_backoff, initial_backoff * 2 ** (attempted - 1))
-        await asyncio.sleep(delay)
-        if attempted <= max_retries:
-            logger.debug('Elasticsearch bulk request retry')
+        finally:
+            delay = min(max_backoff, initial_backoff * 2 ** (attempted - 1))
+            await asyncio.sleep(delay)
+            if attempted <= max_retries:
+                logger.debug('Elasticsearch bulk request retry')
 
     return succeed, failed
 
@@ -219,44 +217,3 @@ async def bulk(client, actions, chunk_size=DEFAULT_CHUNK_SIZE, max_chunk_bytes=D
         assert isinstance(semaphore, asyncio.Semaphore)
         semaphore.release()
     return succeed, failed
-
-
-# async def _bulk(client, actions, chunk_size=DEFAULT_CHUNK_SIZE, max_chunk_bytes=DEFAULT_CHUNK_BYTES,
-#                 expand_action=expand_action, max_retries=0, initial_backoff=2,
-#                 max_backoff=600, semaphore=None, **kwargs):
-#     """
-#
-#     :param client:
-#     :param actions:
-#     :param chunk_size:
-#     :param max_chunk_bytes:
-#     :param expand_action:
-#     :param max_retries:
-#     :param initial_backoff:
-#     :param max_backoff:
-#     :param semaphore: use for request traffic restriction
-#     :param kwargs:
-#     :return:
-#     """
-#     futures = []
-#
-#     async with stream.chunks(actions, chunk_size).stream() as chunks:
-#         async for chunk in chunks:
-#             logger.debug('Elasticsearch bulk chunk size: ', len(chunk))
-#             for future in [future for future in futures if future.done()]:
-#                 # return all done future's result
-#                 yield future.result()
-#                 # remove future from futures list after yield result
-#                 futures.remove(future)
-#
-#             logger.debug('Elasticsearch async helper bulk semaphore value: ', semaphore._value)
-#             await semaphore.acquire()
-#             future = _bulk(client, chunk, chunk_size, max_chunk_bytes,
-#                            expand_action, max_retries, initial_backoff,
-#                            max_backoff, semaphore, **kwargs)
-#             futures.append(asyncio.ensure_future(future))
-#
-#         # await for all future complete
-#         done, _ = await asyncio.wait(futures)
-#         for future in done:
-#             yield future.result()

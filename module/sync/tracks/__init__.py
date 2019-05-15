@@ -41,7 +41,8 @@ act_share_detail_sync_manager = SyncManager(oplog_client,
 def _it_doc_process(doc):
     doc = {**doc, **track_util.url_split(doc.get('uri'))}
     if doc.get('senderToUserId') and _.get(doc, 'params.sender'):
-        doc['salesId'], doc['params']['sender'] = _.get(doc, 'params.sender'), doc['senderToUserId']
+        doc['salesId'] = str(_.get(doc, 'params.sender'))
+        doc['params']['sender'] = str(doc['senderToUserId'])
     if _.has(doc, 'params.secondlevel'):
         doc['_parent'] = _.get(doc, 'params.secondlevel')
     return doc
@@ -54,14 +55,14 @@ def create_index():
             'settings': _settings
         })
         if not res or not res.get('acknowledged') is True:
-            logger.error('Create indies failed', res)
-            raise Exception('Create indies failed', res)  # todo: 抽象异常
+            logger.error('Create indies failed. %r', res)
+            raise Exception('Create indies failed', res)
 
 
 async def index_all():
     await merchant_sync_manager.index_all()
-    # await impression_track_sync_manager.index_all(doc_process_func=_it_doc_process)
-    # await act_share_detail_sync_manager.index_all(doc_process_func=_it_doc_process)
+    await impression_track_sync_manager.index_all(doc_process_func=_it_doc_process)
+    await act_share_detail_sync_manager.index_all(doc_process_func=_it_doc_process)
 
 
 def delete_all():

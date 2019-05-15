@@ -262,13 +262,16 @@ class DocManager(DocManagerBase):
             for future in done:
                 yield future.result()
 
-    async def bulk_index(self, docs, namespace, params=None, chunk_size=None):
+    async def bulk_index(self, docs, namespace, params=None, chunk_size=None, doc_process=None):
         """
         Insert multiple documents into Elasticsearch directly.
         :return:
         """
         if not docs:
             return None
+
+        if doc_process:
+            docs = stream.map(docs, doc_process)
 
         async def bulk(docs):
             succeed_total, failed_total = 0, 0
@@ -277,7 +280,14 @@ class DocManager(DocManagerBase):
                 failed_total += len(failed)
                 self.monitor.increase_succeed(len(succeed))
                 self.monitor.increase_failed(len(failed))
-                logger.info('[Direct bulk] ns:%s succeed:%d failed:%d' % (namespace, len(succeed), len(failed)))
+                logger.info('[Direct bulk] ns:%s succeed:%d' % (namespace, len(succeed)))
+                if failed:
+                    logger.warning('[Direct bulk] ns:%s failed:%d' % (namespace, len(failed)))
+                    _, failed = await asyncio.ensure_future(self._failed_actions_commit(failed))
+                    if not failed:
+                        logger.debug('Failed actions commit success')
+                    else:
+                        logger.warning('Failed actions commit failed')
             return succeed_total, failed_total
 
         return await bulk(stream.map(docs,
@@ -291,8 +301,8 @@ class DocManager(DocManagerBase):
         if succeed:
             logger.debug('Log block commit success')
         else:
-            logger.error('Log block commit error', failed)
-            raise Exception(failed)  # todo: 抽象异常
+            logger.error('Log block commit error')
+            raise Exception(failed)
 
         # bulk actions
         succeed, failed = await asyncio.ensure_future(
@@ -300,21 +310,22 @@ class DocManager(DocManagerBase):
                                initial_backoff=0.1,
                                max_backoff=1))
         self.monitor.increase_processed(len(action_buffer))
-        logger.info('[Bulk] succeed:%d failed:%d' % (len(succeed), len(failed)))
+        logger.info('[Bulk] succeed:%d' % len(succeed))
 
         # commit log block result
         succeed, failed = await asyncio.ensure_future(self._log_block_done(action_log_block))
         if succeed:
             logger.debug('Mark log block done success')
         else:
-            logger.warning('Mark log block done failed', failed)
+            logger.warning('Mark log block done failed')
 
         if failed:
+            logger.warning('[Bulk] failed:%d' % len(failed))
             _, failed = await asyncio.ensure_future(self._failed_actions_commit(failed))
             if not failed:
                 logger.debug('Failed actions commit success')
             else:
-                logger.warning('Failed actions commit failed', failed)
+                logger.warning('Failed actions commit failed')
 
         if refresh:
             await self.es.indices.refresh()
@@ -353,12 +364,14 @@ class DocManager(DocManagerBase):
 
     def _failed_actions_commit(self, failed_actions):
         logger.debug('Failed actions commit')
-        return async_helpers.bulk(client=self.es, actions=map(lambda action: {
-            '_op_type': ElasticOperate.index,
-            '_index': self.error_index,
-            '_type': self.error_type,
-            '_source': action
-        }, failed_actions), max_retries=3,
+        return async_helpers.bulk(client=self.es,
+                                  actions=map(lambda action: {
+                                      '_op_type': ElasticOperate.index,
+                                      '_index': self.error_index,
+                                      '_type': self.error_type,
+                                      '_source': action
+                                  }, failed_actions),
+                                  max_retries=3,
                                   initial_backoff=0.1,
                                   max_backoff=1)
 
@@ -550,7 +563,8 @@ class BulkBuffer:
 
 
 class BlockChain:
-    __TS_MARK_FILE = sys.path[1] + '/ts_mark.data'
+    __TS_MARK_FILE = sys.path[0] + '/ts_mark.data'
+    __TS_MARK_FILE_DEBUG = sys.path[1] + '/ts_mark.data'
 
     def __init__(self, docman: DocManager, serializer=BSONSerializer()):
         self.docman = docman
@@ -568,11 +582,26 @@ class BlockChain:
             - Reindex one or more indices
         :return:
         """
-        f = open(self.__TS_MARK_FILE, 'wb')
         ts = bson.timestamp.Timestamp(util.now_timestamp_s(), 1)
-        pickle.dump(ts, f)
-        f.close()
-        logger.info('Mark ts %s' % str(ts))
+
+        debug_mode = False
+        for path in [self.__TS_MARK_FILE, self.__TS_MARK_FILE_DEBUG]:
+            try:
+                logger.info('ts mark file path: %s' % path)
+                with open(path, 'wb') as f:
+                    pickle.dump(ts, f)
+            except OSError:
+                if not debug_mode:
+                    logger.warning('Can NOT open ts mark file, try DEBUG mode')
+                    debug_mode = True
+                else:
+                    raise
+            except BaseException as e:
+                logger.error('Mark ts failed: %r', e)
+                raise
+            else:
+                logger.info('Mark ts %s' % str(ts))
+                break
 
     def _get_last_ts_mark(self):
         """
@@ -587,13 +616,12 @@ class BlockChain:
                 with open(self.__TS_MARK_FILE, 'rb') as f:
                     ts = pickle.load(f)
             except Exception as e:
-                logger.warning('Can NOT open ts mark file', e)
-                pass
+                logger.warning('Can NOT open ts mark file. %r', e)
 
             try:
                 os.remove(self.__TS_MARK_FILE)
             except Exception as e:
-                logger.warning('Can NOT remove ts mark file', e)
+                logger.warning('Can NOT remove ts mark file. %r', e)
         if ts:
             logger.info('Get last ts from ts mark: %s' % str(ts))
         else:

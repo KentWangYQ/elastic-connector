@@ -30,3 +30,7 @@ class OplogTest(unittest.TestCase):
         loop = asyncio.get_event_loop()
         loop.run_until_complete(oplog.tail())
         loop.close()
+
+    def test_earliest_ts(self):
+        oplog = Oplog()
+        print(oplog.earliest_ts())

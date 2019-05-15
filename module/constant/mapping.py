@@ -12,7 +12,6 @@ es_errors = {
 tracks = {
     'index': 'rts_test',
     'types': {
-        # todo: for test index
         'merchant': {
             'namespace': 'rts_test.merchant',
             'collection': 'merchants'

@@ -1,33 +1,15 @@
 import fire
-import sys
 import asyncio
 from common.elasticsearch.doc_manager import mongo_docman
 from module import sync
 
 import logging
 
-# todo: 统筹logging handler
 logger = logging.getLogger('rts')
-
-logger.setLevel(logging.INFO)
-
-# create console handler and set level to debug
-ch = logging.StreamHandler(sys.stdout)
-ch.setLevel(logging.INFO)
-
-# create formatter
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
-# add formatter to ch
-ch.setFormatter(formatter)
-
-# add ch to logger
-logger.addHandler(ch)
 
 
 class Sync:
     def __init__(self):
-        print(logger.handlers)
         self.loop = asyncio.get_event_loop()
         self.loop.run_until_complete(mongo_docman.auto_committer.stop())
 
@@ -44,7 +26,7 @@ class Sync:
         if isinstance(indices, tuple):
             for idx in indices:
                 if not hasattr(sync, idx):
-                    logger.error('Invalid index "{0}"'.format(idx))
+                    logger.error('Invalid index "%s"' % idx)
                     return
             for idx in indices:
                 getattr(sync, idx).delete_index()

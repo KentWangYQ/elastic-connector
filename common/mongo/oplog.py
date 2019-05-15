@@ -44,16 +44,18 @@ class Oplog(EventEmitter):
     def __init__(self, uri=None, batch_size=100, skip=0, limit=0, **kwargs):
         super().__init__()
         self._close = False
+        self._client_sync = pymongo.MongoClient(uri or config.CONFIG.MONGO.get('oplog_uri'))
         self._client = motor.motor_asyncio.AsyncIOMotorClient(uri or config.CONFIG.MONGO.get('oplog_uri'))
         self._coll_oplog = self._client.local.oplog.rs
         self._filter = _filter(**kwargs)
         self._batch_size = batch_size
         self._skip = skip
         self._limit = limit
+        self._start_ts = kwargs.get('ts')
 
         @self.on('i_error')
         def i_error(e, *args, **kwargs):
-            logger.warning('Oplog listener process error', e, *args, **kwargs)
+            logger.warning('[Oplog] %r', e)
             self.emit('error', e, *args, **kwargs)
 
     _op_mapping = {
@@ -65,6 +67,11 @@ class Oplog(EventEmitter):
     }
 
     async def tail(self):
+        if self._start_ts and self._start_ts < self.earliest_ts():
+            # ts check, if start ts fall behind of earliest ts, unable to guarantee data integrity,
+            # full index must be executed before real time sync
+            logger.error('[Oplog] Start ts is fall behind of earliest ts, please execute full index!')
+            raise Exception('Start ts is fall behind of earliest ts')
         while not self._close:
             cursor = self._coll_oplog.find(filter=self._filter,
                                            cursor_type=pymongo.CursorType.TAILABLE,
@@ -85,12 +92,18 @@ class Oplog(EventEmitter):
                         self.emit('%s_%s' % (Oplog._get_coll(doc.get('ns')), self._op_mapping[doc.get('op')]), doc)
                         self._filter['ts'] = doc['ts']
                     except Exception as e:
-                        logger.warning('Oplog tail error', e)
+                        logger.warning('[Oplog] %r', e)
                         self.emit('error', e, doc)
 
             await asyncio.sleep(1)
             cursor.close()
         logger.info('Oplog tail closed')
+
+    def earliest_ts(self):
+        op = self._client_sync.local.oplog.rs.find_one(sort=[('ts', 1)])
+        if op:
+            return op.get('ts')
+        return None
 
     def close(self):
         logger.info('Oplog tail closing ...')

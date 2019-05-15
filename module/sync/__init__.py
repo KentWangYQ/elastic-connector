@@ -9,7 +9,6 @@ logger = logging.getLogger('rts')
 
 def create_index():
     tracks.create_index()
-    print(logger.handlers)
     logger.info('All index created')
 
 

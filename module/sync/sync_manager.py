@@ -43,7 +43,8 @@ class SyncManager:
         :return:
         """
         cursor = self.collection.find(sort=[('_id', -1)], **self.query_options)
-        await self.mongo_docman.bulk_index(cursor, self.namespace, params={'routing': self.routing})
+        await self.mongo_docman.bulk_index(cursor, self.namespace, params={'routing': self.routing},
+                                           doc_process=doc_process_func)
 
     def delete_all(self):
         return self.mongo_docman.delete_by_query_sync(namespace=self.namespace, body={"query": {"match_all": {}}})
@@ -72,18 +73,19 @@ class SyncManager:
         :param doc_process_func: doc pre-process
         :return:
         """
-        # todo: support doc_process_func
-        return self.mongo_docman.update(oplog.get('o2').get('_id'), oplog.get('o'), namespace=self.namespace,
-                                        timestamp=oplog.get('ts'))
+        _id = oplog.get('o2').get('_id')
+        doc = oplog.get('o')
+        if doc_process_func:
+            assert isfunction(doc_process_func), 'doc_process_func must be a function!'
+            _id, doc = doc_process_func(_id, doc)
+        return self.mongo_docman.update(_id, doc, namespace=self.namespace, timestamp=oplog.get('ts'))
 
-    def delete_doc(self, oplog, doc_process_func=None):
+    def delete_doc(self, oplog):
         """
         Process delete document option
         :param oplog:
-        :param doc_process_func: doc pre-process
         :return:
         """
-        # todo: support doc_process_func
         return self.mongo_docman.delete(oplog.get('o').get('_id'), namespace=self.namespace, timestamp=oplog.get('ts'))
 
     def real_time_sync(self, ops=('i', 'u', 'd'), doc_process_funcs=None):
