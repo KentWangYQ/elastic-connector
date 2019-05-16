@@ -1,5 +1,5 @@
 # rts
-Real time sync from mongodb to elasticsearch
+Real time sync data to elasticsearch
 
 ### 简介
 Elasticsearch connector是一个将其他数据源(如数据库系统)实时同步数据到Elasticsearch的通用平台。通过全量同步和实时增量同步配合，实现高效的x2es的实时数据同步。
