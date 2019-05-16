@@ -250,6 +250,7 @@ class DocManager(DocManagerBase):
                 await self.semaphore.acquire()
                 future = async_helpers.bulk(client=self.es,
                                             actions=chunk,
+                                            chunk_size=self.chunk_size,
                                             max_retries=3,
                                             initial_backoff=0.3,
                                             max_backoff=3,
@@ -393,6 +394,8 @@ class DocManager(DocManagerBase):
         pass
 
     def delete_by_query_sync(self, namespace, body, params=None):
+        # todo: 增加update_by_query
+        # todo: 确保x_by_query的相对顺序，调用之后不能立即执行，需要加入actionbuffer，在恰当的时机执行
         index, doc_type = self._index_and_mapping(namespace)
         params = params or {}
         return self.es_sync.delete_by_query(index=index, body=body, doc_type=doc_type, params=params)
