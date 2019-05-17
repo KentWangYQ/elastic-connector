@@ -64,6 +64,8 @@ class SyncManager:
             # doc process
             assert isfunction(doc_process_func), 'doc_process_func must be a function!'
             doc = doc_process_func(doc)
+        if self.routing:
+            doc['_parent'] = self.routing
         return self.mongo_docman.index(doc, namespace=self.namespace, timestamp=oplog.get('ts'))
 
     def update_doc(self, oplog, doc_process_func=None):
@@ -78,6 +80,8 @@ class SyncManager:
         if doc_process_func:
             assert isfunction(doc_process_func), 'doc_process_func must be a function!'
             _id, doc = doc_process_func(_id, doc)
+        if self.routing:
+            doc['_parent'] = self.routing
         return self.mongo_docman.update(_id, doc, namespace=self.namespace, timestamp=oplog.get('ts'))
 
     def delete_doc(self, oplog):
