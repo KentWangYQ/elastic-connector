@@ -16,7 +16,6 @@ class Sync:
     def index_all(self):
         sync.delete_indies()
         sync.create_index()
-        mongo_docman.log_block_chain.mark_ts()
 
         self.loop.run_until_complete(sync.index_all())
         self.loop.run_until_complete(mongo_docman.stop())

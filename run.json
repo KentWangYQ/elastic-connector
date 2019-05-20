@@ -1,0 +1,33 @@
+{
+  "apps": [
+    {
+      "name": "rts",
+      "script": "rts.py",
+      "watch": false,
+      "env": {
+        "RTS_DEBUG": true,
+        "RTS_ENV": "development"
+      },
+      "env_wh-test": {
+        "RTS_DEBUG": false,
+        "RTS_ENV": "development_wh"
+      },
+      "env_demo": {
+        "RTS_DEBUG": false,
+        "RTS_ENV": "demo"
+      },
+      "env_test": {
+        "RTS_DEBUG": false,
+        "RTS_ENV": "test"
+      },
+      "env_staging": {
+        "RTS_DEBUG": false,
+        "RTS_ENV": "staging"
+      },
+      "env_production": {
+        "RTS_DEBUG": false,
+        "RTS_ENV": "production"
+      }
+    }
+  ]
+}

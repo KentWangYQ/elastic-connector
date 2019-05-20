@@ -32,10 +32,10 @@ class DocManager(DocManagerBase):
                  loop=asyncio.get_event_loop(),
                  unique_key='_id',
                  chunk_size=constant.DEFAULT_CHUNK_SIZE,
-                 log_index='mongodb_log_block',
-                 log_type='mongodb_log_block',
-                 error_index='mongodb_error',
-                 error_type='mongodb_error',
+                 log_index='mongo_log_block',
+                 log_type='mongo_log_block',
+                 error_index='mongo_error',
+                 error_type='mongo_error',
                  attachment_field='content',
                  auto_commit=False,
                  auto_commit_interval=constant.DEFAULT_COMMIT_INTERVAL,
@@ -393,9 +393,20 @@ class DocManager(DocManagerBase):
     def search(self):
         pass
 
-    def delete_by_query_sync(self, namespace, body, params=None):
-        # todo: 增加update_by_query
-        # todo: 确保x_by_query的相对顺序，调用之后不能立即执行，需要加入actionbuffer，在恰当的时机执行
+    async def _wait_all_commit(self):
+        """
+        Commit all actions in buffer and wait complete
+
+        help x_by_query to keep sequential continuity
+        :return:
+        """
+        futures = []
+        while self.bulk_buffer.has_action():
+            futures.append(self.commit())
+        await asyncio.wait(futures)
+
+    async def delete_by_query(self, namespace, body, params=None):
+        await self._wait_all_commit()  # commit all actions before this option, to keep sequential continuity
         index, doc_type = self._index_and_mapping(namespace)
         params = params or {}
         return self.es_sync.delete_by_query(index=index, body=body, doc_type=doc_type, params=params)
@@ -521,8 +532,8 @@ class BulkBuffer:
         self._i += 1
         return self._i
 
-    def count(self):
-        return len(self.action_buffer)
+    def has_action(self):
+        return self.blocks or len(self.action_buffer) > 0
 
     def add_action(self, action, action_log):
         """
@@ -543,7 +554,7 @@ class BulkBuffer:
         self.action_buffer[str(action.get('_id'))] = action
         self.action_logs.append(action_log)
 
-        if self.count() >= self.max_block_size:
+        if len(self.action_buffer) >= self.max_block_size:
             self.blocks.append(self.get_buffer())
 
     def reset_action(self, _id):
@@ -576,64 +587,80 @@ class BlockChain:
     def __init__(self, docman: DocManager, serializer=BSONSerializer()):
         self.docman = docman
         self.serializer = serializer
+
+        # _lt = self._get_last_ts_mark()
+        # if _lt:
+        #     self.clear()
+        #     self._commit_genesis_block()  # commit genesis block as the first block of chain
+        #     self._remove_last_ts_mark()  # After commit genesis block success, remove last ts mark
+        #     block = GENESIS_BLOCK
+        # else:
         block = self._get_last_block()
+        if not block:
+            self._commit_genesis_block()
+            block = GENESIS_BLOCK
         self.head, self.prev, self.current = (block,) * 3
-        self.last_ts = self._get_last_ts_mark() or self.current.last_action.get('ts') or bson.timestamp.Timestamp(
-            util.now_timestamp_s(), 1)
 
-    def mark_ts(self):
-        """
-        Mark current timestamp
-        Use as last ts in some scenes
-            - Index all indices
-            - Reindex one or more indices
-        :return:
-        """
-        ts = bson.timestamp.Timestamp(util.now_timestamp_s(), 1)
+        self.last_ts = self.current.last_action.get('ts')
 
-        debug_mode = False
-        for path in [self.__TS_MARK_FILE, self.__TS_MARK_FILE_DEBUG]:
-            try:
-                logger.info('ts mark file path: %s' % path)
-                with open(path, 'wb') as f:
-                    pickle.dump(ts, f)
-            except OSError:
-                if not debug_mode:
-                    logger.warning('Can NOT open ts mark file, try DEBUG mode')
-                    debug_mode = True
-                else:
-                    raise
-            except BaseException as e:
-                logger.error('Mark ts failed: %r', e)
-                raise
-            else:
-                logger.info('Mark ts %s' % str(ts))
-                break
-
-    def _get_last_ts_mark(self):
-        """
-        Get last ts mark.
-
-        If mark file not exist or read failed, return None
-        :return:
-        """
-        ts = None
-        if os.path.exists(self.__TS_MARK_FILE):
-            try:
-                with open(self.__TS_MARK_FILE, 'rb') as f:
-                    ts = pickle.load(f)
-            except Exception as e:
-                logger.warning('Can NOT open ts mark file. %r', e)
-
-            try:
-                os.remove(self.__TS_MARK_FILE)
-            except Exception as e:
-                logger.warning('Can NOT remove ts mark file. %r', e)
-        if ts:
-            logger.info('Get last ts from ts mark: %s' % str(ts))
-        else:
-            logger.info('No ts mark found')
-        return ts
+    # def mark_ts(self):
+    #     """
+    #     Mark current timestamp
+    #     Use as last ts in some scenes
+    #         - Index all indices
+    #         - Reindex one or more indices
+    #     :return:
+    #     """
+    #     ts = bson.timestamp.Timestamp(util.now_timestamp_s(), 1)
+    #
+    #     debug_mode = False
+    #     for path in [self.__TS_MARK_FILE, self.__TS_MARK_FILE_DEBUG]:
+    #         try:
+    #             logger.info('ts mark file path: %s' % path)
+    #             with open(path, 'wb') as f:
+    #                 pickle.dump(ts, f)
+    #         except OSError:
+    #             if not debug_mode:
+    #                 logger.warning('Can NOT open ts mark file, try DEBUG mode')
+    #                 debug_mode = True
+    #             else:
+    #                 raise
+    #         except BaseException as e:
+    #             logger.error('Mark ts failed: %r', e)
+    #             raise
+    #         else:
+    #             logger.info('Mark ts %s' % str(ts))
+    #             break
+    #
+    # def _get_last_ts_mark(self):
+    #     """
+    #     Get last ts mark.
+    #
+    #     If mark file not exist or read failed, return None
+    #     :return:
+    #     """
+    #     ts = None
+    #     if os.path.exists(self.__TS_MARK_FILE):
+    #         try:
+    #             with open(self.__TS_MARK_FILE, 'rb') as f:
+    #                 ts = pickle.load(f)
+    #         except Exception as e:
+    #             logger.warning('Can NOT open ts mark file. %r', e)
+    #
+    #     if ts:
+    #         logger.info('Get last ts from ts mark: %s' % str(ts))
+    #     else:
+    #         logger.info('No ts mark found')
+    #     return ts
+    #
+    # def _remove_last_ts_mark(self):
+    #     if os.path.exists(self.__TS_MARK_FILE):
+    #         try:
+    #             os.remove(self.__TS_MARK_FILE)
+    #         except Exception as e:
+    #             logger.warning('Can NOT remove ts mark file. %r', e)
+    #     else:
+    #         logger.info('No ts mark found')
 
     def gen_block(self, actions):
         # The create_time of log block can be the order of blocks
@@ -671,7 +698,7 @@ class BlockChain:
         return blocks
 
     def _get_last_block(self):
-        block = GENESIS_BLOCK
+        block = None
         if self.docman.es_sync.indices.exists_type(index=self.docman.log_index,
                                                    doc_type=self.docman.log_type):
 
@@ -700,37 +727,6 @@ class BlockChain:
                 t = util.datetime2str(rn.get('hits').get('hits')[0].get('_source').get('create_time', {})) or t
 
             self._clean_invalid_block(t)
-
-            # last_valid_block_query_body = {
-            #     "size": 1,
-            #     "query": {
-            #         "bool": {
-            #             "must": [
-            #                 {
-            #                     "term": {
-            #                         "status.keyword": {
-            #                             "value": ActionLogBlockStatus.done
-            #                         }
-            #                     }
-            #                 },
-            #                 {
-            #                     "range": {
-            #                         "create_time.$date": {
-            #                             "lt": t
-            #                         }
-            #                     }
-            #                 }
-            #             ]
-            #         }
-            #     },
-            #     "sort": [
-            #         {
-            #             "create_time.$date": {
-            #                 "order": "desc"
-            #             }
-            #         }
-            #     ]
-            # }
             last_valid_block_query_body = {
                 "size": 1,
                 "sort": [
@@ -747,24 +743,25 @@ class BlockChain:
                 block = self._gen_sv_block_from_dict(
                     rl.get('hits').get('hits')[0].get('_source')) or t
 
-        if block is GENESIS_BLOCK:
-            logger.info('Last block does NOT exist, use GENESIS BLOCK')
+        if not block:
+            logger.info('Last block does NOT exist')
         else:
             logger.info('Get last block success')
 
         return block
 
     def _clean_invalid_block(self, start_time):
-        self.docman.delete_by_query_sync(namespace='.'.join([self.docman.log_index, self.docman.log_type]),
-                                         body={
-                                             "query": {
-                                                 "range": {
-                                                     "create_time.$date": {
-                                                         "gte": start_time
-                                                     }
-                                                 }
-                                             }
-                                         })
+        self.docman.es_sync.delete_by_query(index=self.docman.log_index,
+                                            doc_type=self.docman.log_type,
+                                            body={
+                                                "query": {
+                                                    "range": {
+                                                        "create_time.$date": {
+                                                            "gte": start_time
+                                                        }
+                                                    }
+                                                }
+                                            })
         self.docman.es_sync.indices.refresh()
         logger.info('Invalid log block was cleaned')
 
@@ -792,5 +789,15 @@ class BlockChain:
         Clear the log black chain
         :return:
         """
-        self.docman.delete_index('.'.join([self.docman.log_index, self.docman.log_type]))
+        self.docman.delete_index('.'.join([self.docman.log_index, self.docman.log_type]),
+                                 params={'ignore_unavailable': True})
         logger.info('Log block chain cleared')
+
+    def _commit_genesis_block(self):
+        # current timestamp as last ts
+        GENESIS_BLOCK.last_action = {'ts': bson.timestamp.Timestamp(util.now_timestamp_s(), 1)}
+        # commit genesis block
+        body = GENESIS_BLOCK.to_dict()
+        _id = body.pop('_id')
+        self.docman.es_sync.index(index=self.docman.log_index, doc_type=self.docman.log_type, body=body, id=_id)
+        logger.info('GENESIS BLOCK committed')

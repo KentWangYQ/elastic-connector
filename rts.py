@@ -1,12 +1,15 @@
 import logging
 import asyncio
 from common.mongo import oplog_client
+from common.elasticsearch.doc_manager import mongo_docman
 from module import sync
 
 logger = logging.getLogger('rts')
 
 
 def main():
+    if not mongo_docman.log_block_chain.last_ts:
+        raise Exception('Can NOT get last ts, reindex all.')
     sync.real_time_sync()
     while True:
         @oplog_client.on('data')

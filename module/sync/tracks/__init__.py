@@ -41,12 +41,12 @@ act_share_detail_sync_manager = SyncManager(oplog_client,
 
 
 def _it_doc_process(doc):
-    doc = {**doc, **track_util.url_split(doc.get('uri'))}
-    if doc.get('senderToUserId') and _.get(doc, 'params.sender'):
-        doc['salesId'] = str(_.get(doc, 'params.sender'))
-        doc['params']['sender'] = str(doc['senderToUserId'])
-    if _.has(doc, 'params.secondlevel'):
-        doc['_parent'] = _.get(doc, 'params.secondlevel')
+    # doc = {**doc, **track_util.url_split(doc.get('uri'))}
+    # if doc.get('senderToUserId') and _.get(doc, 'params.sender'):
+    #     doc['salesId'] = str(_.get(doc, 'params.sender'))
+    #     doc['params']['sender'] = str(doc['senderToUserId'])
+    # if _.has(doc, 'params.secondlevel'):
+    #     doc['_parent'] = _.get(doc, 'params.secondlevel')
     return doc
 
 
@@ -63,14 +63,14 @@ def create_index():
 
 async def index_all():
     await merchant_sync_manager.index_all()
-    # await impression_track_sync_manager.index_all(doc_process_func=_it_doc_process)
-    # await act_share_detail_sync_manager.index_all(doc_process_func=_it_doc_process)
+    await impression_track_sync_manager.index_all(doc_process_func=_it_doc_process)
+    await act_share_detail_sync_manager.index_all(doc_process_func=_it_doc_process)
 
 
-def delete_all():
-    merchant_sync_manager.delete_all()
-    impression_track_sync_manager.delete_all()
-    act_share_detail_sync_manager.delete_all()
+async def delete_all():
+    await merchant_sync_manager.delete_all()
+    await impression_track_sync_manager.delete_all()
+    await act_share_detail_sync_manager.delete_all()
 
 
 def delete_indies():
@@ -81,5 +81,5 @@ def delete_indies():
 
 def real_time_sync():
     merchant_sync_manager.real_time_sync()
-    impression_track_sync_manager.real_time_sync(ops=('i', 'd'), doc_process_funcs={'i': _it_doc_process})
-    act_share_detail_sync_manager.real_time_sync(ops=('i', 'd'), doc_process_funcs={'i': _it_doc_process})
+    impression_track_sync_manager.real_time_sync(doc_process_funcs={'i': _it_doc_process})
+    act_share_detail_sync_manager.real_time_sync(doc_process_funcs={'i': _it_doc_process})

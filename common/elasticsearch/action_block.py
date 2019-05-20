@@ -1,5 +1,6 @@
 import hashlib
 import json
+from datetime import datetime
 from merkletools import MerkleTools
 from common import util
 
@@ -107,4 +108,7 @@ class SVActionLogBlock(ActionLogBlock):
 
 
 # GENESIS_BLOCK
-GENESIS_BLOCK = ActionLogBlock(prev_block_hash=None, actions=[], create_time=1556219384204)
+GENESIS_BLOCK = ActionLogBlock(prev_block_hash=None,
+                               actions=[],
+                               create_time=datetime.fromtimestamp(1556219384),
+                               status=ActionLogBlockStatus.done)

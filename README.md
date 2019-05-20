@@ -33,7 +33,7 @@ Elasticsearch connector是一个将其他数据源(如数据库系统)实时同�
 同步过程中的数据一致性主要体现在三个方面：初始化完整数据，增量数据完整性，操作日志重放顺序一致性。
 1. 初始化完整数据：
     1. full index：全量同步保证完整初始化数据：大部分数据库系统的操作日志机制都只能保存最近一段时间内的日志，全量同步可以保证初始数据完整性。
-    2. ts mark: 全量同步启动时记录当前timestamp，作为实时同步的起点。保证全量同步过程中的操作不丢失。（依赖操作日志幂等性）
+    2. GENESIS BLOCK: 创世区块，全量同步启动时创建GENESIS BLOCK，其中记录当前timestamp，作为实时同步的起点。保证全量同步过程中的操作不丢失。
 2. 增量数据完整性：
     1. block chain：对action block引入区块链机制，每一个action block都包含福区块的id，所有区块形成链式结构，保证任何区块缺失都可侦测。
     2. action block ack：Elasticsearch数据重放成功后，将该action log加入block chain。
@@ -45,15 +45,19 @@ Elasticsearch connector是一个将其他数据源(如数据库系统)实时同�
     1. action block：将操作日志依序批量打成区块，然后依次进行重放。(性能模式无法严格保证重放顺序)
     2. action no：根据action到达的顺序进行全局编号，保证block内部action顺序。
     3. action merge：同一block内的同一条数据的actions融合为一条action，确保局部相对顺序一致。
-    4. update_by_query和delete_by_query只支持同步方式，Elasticsearch bulk不支持这两个操作，且这两个方法通常较为耗时，无法保证并发顺序。
+    4. x_by_query: Elasticsearch提供update_by_query和delete_by_query用于指定条件批量操作，Elasticsearch bulk不支持这两个操作，且这两个方法通常较为耗时，无法保证并发顺序。所以doc_manager提供了专有的x_by_query方法，该操作执行前会先提交所有buffer中的actions，并等待完成；然后再用同步的方式执行该操作。以此保证x_by_query操作与其他操作的顺序一致性。
 
 ### 高可用机制
 本平台没有内置Hypervisor，可以通过成熟方案解决，如supervisor。设计时遵循的原则是尽量处理和记录异常和错误，除非该错误严重影响数据一致性或无法处理。
 1. 实时同步状态存储
     1. action block ack：成功重放的block，实时写入block，持久化状态。
 2. 宕机恢复
-    1. ts mark: 全量同步启动时记录当前timestamp，作为实时同步的起点。保证全量同步过程中的操作不丢失。（依赖操作日志幂等性）
+    1. GENESIS BLOCK: 创世区块，全量同步启动时创建GENESIS BLOCK，其中记录当前timestamp，作为实时同步的起点。保证全量同步过程中的操作不丢失。
     2. block chain：重启时使用block chain最后一个成功区块的last aciton的timestamp作为启动时间点。（依赖操作日志幂等性）
+    
+
+### 操作日志失效检测
+启动实时同步之前，会检测启动timestamp是否有效。即timestamp是否大于等于数据源最早一条操作日志的时间(start timestamp >= earliest action log timestamp)，如果小于，则说明已经无法保证数据完整，抛出异常，要求重新执行全量同步。
     
     
 ### 基本操作命令
@@ -63,6 +67,11 @@ Elasticsearch connector是一个将其他数据源(如数据库系统)实时同�
     2. 同步部分索引(tracks和users)：python full_sync.py index tracks users
 2. 实时同步
     1. python rts.py
+    
+    
+### 监控与限速
+1. 提供Monitor，实时监控速度及其他信息。模块化设计，方便扩展。
+2. 提供速度控制，使用信号量控制网络并发。
     
     
     

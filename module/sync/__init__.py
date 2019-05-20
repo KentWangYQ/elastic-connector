@@ -22,8 +22,8 @@ def delete_indies():
     logger.info('All indies deleted')
 
 
-def delete_all():
-    tracks.delete_all()
+async def delete_all():
+    await tracks.delete_all()
     logger.info('All documents deleted')
 
 

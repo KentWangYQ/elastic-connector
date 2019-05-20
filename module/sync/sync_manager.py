@@ -46,8 +46,8 @@ class SyncManager:
         await self.mongo_docman.bulk_index(cursor, self.namespace, params={'routing': self.routing},
                                            doc_process=doc_process_func)
 
-    def delete_all(self):
-        return self.mongo_docman.delete_by_query_sync(namespace=self.namespace, body={"query": {"match_all": {}}})
+    async def delete_all(self):
+        await self.mongo_docman.delete_by_query(namespace=self.namespace, body={"query": {"match_all": {}}})
 
     def delete_index(self):
         return self.mongo_docman.delete_index(namespace=self.namespace, params={'ignore_unavailable': True})

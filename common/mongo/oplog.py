@@ -80,7 +80,8 @@ class Oplog(EventEmitter):
                                            skip=self._skip,
                                            limit=self._limit)
             while not self._close and cursor.alive:
-                async for doc in cursor:
+                if await cursor.fetch_next:
+                    doc = cursor.next_object()
                     if self._close:
                         return
                     try:
@@ -94,6 +95,8 @@ class Oplog(EventEmitter):
                     except Exception as e:
                         logger.warning('[Oplog] %r', e)
                         self.emit('error', e, doc)
+                else:
+                    await asyncio.sleep(.1)
 
             await asyncio.sleep(1)
             cursor.close()
