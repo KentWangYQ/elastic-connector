@@ -6,7 +6,7 @@ logger = logging.getLogger('rts')
 
 
 class SyncManager:
-    def __init__(self, oplog_client, mongo_docman, collection, namespace, query_options=None, *args,
+    def __init__(self, oplog_client, mongo_docman, collection, index, type, query_options=None, *args,
                  **kwargs):
         """
 
@@ -31,7 +31,7 @@ class SyncManager:
         self.oplog_client = oplog_client
         self.mongo_docman = mongo_docman
         self.collection = collection
-        self.namespace = namespace
+        self.namespace = '.'.join([index, type])
         self.query_options = query_options or {}
         if 'batch_size' not in self.query_options:
             self.query_options['batch_size'] = constant.MONGO_BATCH_SIZE

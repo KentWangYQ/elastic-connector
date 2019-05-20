@@ -20,7 +20,8 @@ _settings = _map.get('settings')
 merchant_sync_manager = SyncManager(oplog_client,
                                     mongo_docman,
                                     collection=merchant,
-                                    namespace=_types.get('merchant').get('namespace'),
+                                    index=_index,
+                                    type=_types.get('merchant').get('type'),
                                     query_options={
                                         'projection': {'createTime': 0, 'creater': 0, 'updater': 0},
                                         # 'batch_size': 500
@@ -30,23 +31,25 @@ merchant_sync_manager = SyncManager(oplog_client,
 impression_track_sync_manager = SyncManager(oplog_client,
                                             mongo_docman,
                                             collection=impression_track,
-                                            namespace=_types.get('impression_track').get('namespace'),
+                                            index=_index,
+                                            type=_types.get('impression_track').get('type'),
                                             routing=_routing)
 
 act_share_detail_sync_manager = SyncManager(oplog_client,
                                             mongo_docman,
                                             collection=act_share_detail,
-                                            namespace=_types.get('act_share_detail').get('namespace'),
+                                            index=_index,
+                                            type=_types.get('act_share_detail').get('type'),
                                             routing=_routing)
 
 
 def _it_doc_process(doc):
-    # doc = {**doc, **track_util.url_split(doc.get('uri'))}
-    # if doc.get('senderToUserId') and _.get(doc, 'params.sender'):
-    #     doc['salesId'] = str(_.get(doc, 'params.sender'))
-    #     doc['params']['sender'] = str(doc['senderToUserId'])
-    # if _.has(doc, 'params.secondlevel'):
-    #     doc['_parent'] = _.get(doc, 'params.secondlevel')
+    doc = {**doc, **track_util.url_split(doc.get('uri'))}
+    if doc.get('senderToUserId') and _.get(doc, 'params.sender'):
+        doc['salesId'] = str(_.get(doc, 'params.sender'))
+        doc['params']['sender'] = str(doc['senderToUserId'])
+    if _.has(doc, 'params.secondlevel'):
+        doc['_parent'] = _.get(doc, 'params.secondlevel')
     return doc
 
 

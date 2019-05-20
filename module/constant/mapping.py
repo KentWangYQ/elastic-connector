@@ -1,31 +1,30 @@
-es_errors = {
-    'namespace': {
-        'error': 'errors.exception'
-    },
-    'settings': {
-        'number_of_shards': 3,
-        'number_of_replicas': 1
-    },
-    'mappings': {}
-}
+from config import CONFIG
+
+_prefix = CONFIG.ELASTICSEARCH.get('index_prefix')
+_suffix = CONFIG.ELASTICSEARCH.get('index_suffix')
+
+
+def _gen_index_by_env(index):
+    return '%s%s%s' % (_prefix, index, _suffix)
+
 
 tracks = {
-    'index': 'rts_test',
+    'index': _gen_index_by_env('tracks'),
     'types': {
         'merchant': {
-            'namespace': 'rts_test.merchant',
+            'type': 'merchant',
             'collection': 'merchants'
         },
         'impression_track': {
-            'namespace': 'rts_test.impressiontrack',
+            'type': 'impressiontrack',
             'collection': 'impressiontracks'
         },
         'act_share_detail': {
-            'namespace': 'rts_test.actsharedetail',
+            'type': 'actsharedetail',
             'collection': 'actsharedetails'
         }
     },
-    'routing': 'tracks',
+    'routing': '1',
     'mappings': {
         'merchant': {},
         'impressiontrack': {
@@ -40,7 +39,7 @@ tracks = {
         }
     },
     'settings': {
-        'number_of_shards': 3,
+        'number_of_shards': 1,
         'number_of_replicas': 1
     }
 }

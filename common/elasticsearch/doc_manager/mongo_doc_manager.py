@@ -588,13 +588,6 @@ class BlockChain:
         self.docman = docman
         self.serializer = serializer
 
-        # _lt = self._get_last_ts_mark()
-        # if _lt:
-        #     self.clear()
-        #     self._commit_genesis_block()  # commit genesis block as the first block of chain
-        #     self._remove_last_ts_mark()  # After commit genesis block success, remove last ts mark
-        #     block = GENESIS_BLOCK
-        # else:
         block = self._get_last_block()
         if not block:
             self._commit_genesis_block()
@@ -602,65 +595,6 @@ class BlockChain:
         self.head, self.prev, self.current = (block,) * 3
 
         self.last_ts = self.current.last_action.get('ts')
-
-    # def mark_ts(self):
-    #     """
-    #     Mark current timestamp
-    #     Use as last ts in some scenes
-    #         - Index all indices
-    #         - Reindex one or more indices
-    #     :return:
-    #     """
-    #     ts = bson.timestamp.Timestamp(util.now_timestamp_s(), 1)
-    #
-    #     debug_mode = False
-    #     for path in [self.__TS_MARK_FILE, self.__TS_MARK_FILE_DEBUG]:
-    #         try:
-    #             logger.info('ts mark file path: %s' % path)
-    #             with open(path, 'wb') as f:
-    #                 pickle.dump(ts, f)
-    #         except OSError:
-    #             if not debug_mode:
-    #                 logger.warning('Can NOT open ts mark file, try DEBUG mode')
-    #                 debug_mode = True
-    #             else:
-    #                 raise
-    #         except BaseException as e:
-    #             logger.error('Mark ts failed: %r', e)
-    #             raise
-    #         else:
-    #             logger.info('Mark ts %s' % str(ts))
-    #             break
-    #
-    # def _get_last_ts_mark(self):
-    #     """
-    #     Get last ts mark.
-    #
-    #     If mark file not exist or read failed, return None
-    #     :return:
-    #     """
-    #     ts = None
-    #     if os.path.exists(self.__TS_MARK_FILE):
-    #         try:
-    #             with open(self.__TS_MARK_FILE, 'rb') as f:
-    #                 ts = pickle.load(f)
-    #         except Exception as e:
-    #             logger.warning('Can NOT open ts mark file. %r', e)
-    #
-    #     if ts:
-    #         logger.info('Get last ts from ts mark: %s' % str(ts))
-    #     else:
-    #         logger.info('No ts mark found')
-    #     return ts
-    #
-    # def _remove_last_ts_mark(self):
-    #     if os.path.exists(self.__TS_MARK_FILE):
-    #         try:
-    #             os.remove(self.__TS_MARK_FILE)
-    #         except Exception as e:
-    #             logger.warning('Can NOT remove ts mark file. %r', e)
-    #     else:
-    #         logger.info('No ts mark found')
 
     def gen_block(self, actions):
         # The create_time of log block can be the order of blocks

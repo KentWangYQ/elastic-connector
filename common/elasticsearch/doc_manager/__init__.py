@@ -15,20 +15,20 @@ mongo_docman = DocManager(hosts=CONFIG.ELASTICSEARCH.get('hosts'),
                               'serializer': BSONSerializer()
                           },
                           log_index='%s%s%s' % (
-                              CONFIG.ELASTICSEARCH.get('index_prefix'),
+                              CONFIG.ELASTICSEARCH.get('index_prefix', ''),
                               constant.MONGO_LOG_BLOCK_INDEX,
-                              CONFIG.ELASTICSEARCH.get('index_suffix')),
+                              CONFIG.ELASTICSEARCH.get('index_suffix', '')),
                           log_type='%s%s%s' % (
-                              CONFIG.ELASTICSEARCH.get('index_prefix'),
+                              CONFIG.ELASTICSEARCH.get('index_prefix', ''),
                               constant.MONGO_LOG_BLOCK_TYPE,
-                              CONFIG.ELASTICSEARCH.get('index_suffix')),
+                              CONFIG.ELASTICSEARCH.get('index_suffix', '')),
                           error_index='%s%s%s' % (
-                              CONFIG.ELASTICSEARCH.get('index_prefix'),
+                              CONFIG.ELASTICSEARCH.get('index_prefix', ''),
                               constant.MONGO_ERROR_INDEX,
-                              CONFIG.ELASTICSEARCH.get('index_suffix')),
+                              CONFIG.ELASTICSEARCH.get('index_suffix', '')),
                           error_type='%s%s%s' % (
-                              CONFIG.ELASTICSEARCH.get('index_prefix'),
+                              CONFIG.ELASTICSEARCH.get('index_prefix', ''),
                               constant.MONGO_ERROR_TYPE,
-                              CONFIG.ELASTICSEARCH.get('index_suffix')),
+                              CONFIG.ELASTICSEARCH.get('index_suffix', '')),
                           auto_commit=True
                           )
