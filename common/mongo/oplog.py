@@ -13,7 +13,7 @@ logger = logging.getLogger('rts')
 def _filter(*, ts=None, ns=None, include_ns=None, exclude_ns=None, op=None, include_ops=None, exclude_ops=None):
     q = {}
     if isinstance(ts, bson.Timestamp):
-        q['ts'] = {'$gt': ts}
+        q['ts'] = {'$gte': ts}
 
     # ns
     q_ns = []

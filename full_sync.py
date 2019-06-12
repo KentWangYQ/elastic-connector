@@ -14,7 +14,7 @@ class Sync:
         self.loop.run_until_complete(mongo_docman.auto_committer.stop())
 
     def index_all(self):
-        sync.delete_indies()
+        sync.delete_index()
         sync.create_index()
 
         self.loop.run_until_complete(sync.index_all())

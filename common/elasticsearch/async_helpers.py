@@ -11,6 +11,10 @@ NO_RETRY_EXCEPTIONS = [SSLError, NotFoundError, AuthenticationException, Authori
 STRING_TYPES = str, bytes
 logger = logging.getLogger('rts')
 
+ES_KEYS = ('_index', '_parent', '_percolate', '_routing', '_timestamp',
+           '_type', '_version', '_version_type', '_id',
+           '_retry_on_conflict', 'pipeline')
+
 
 def expand_action(data):
     """
@@ -26,9 +30,7 @@ def expand_action(data):
     data = data.copy()
     op_type = data.pop('_op_type', 'index')
     action = {op_type: {}}
-    for key in ('_index', '_parent', '_percolate', '_routing', '_timestamp',
-                '_type', '_version', '_version_type', '_id',
-                '_retry_on_conflict', 'pipeline'):
+    for key in ES_KEYS:
         if key in data and data.get(key) is not None:
             action[op_type][key] = data.pop(key)
 
@@ -64,9 +66,8 @@ def _chunk_actions(docs, chunk_size, max_chunk_bytes, serializer):
         bulk_actions.append(action)
         if data is not None:
             bulk_actions.append(data)
-            bulk_data.append((raw_action, raw_data))
-        else:
-            bulk_data.append((raw_action,))
+
+        bulk_data.append((raw_action, raw_data))
 
         size += cur_size
         action_count += 1
@@ -139,9 +140,11 @@ async def _process_bulk_chunk(client: AsyncElasticsearch,
             # go through request-response pairs and detect failures
             for (action, data), (ok, info) in zip(bulk_data, _chunk_result(bulk_data, result)):
                 op, info = info.popitem()
-                if not ok:
+                if not ok and info.get('status') != 404:
                     if attempted < max_retries:
-                        to_retry.extend(map(client.transport.serializer.dumps, (action, data)))
+                        to_retry.append(client.transport.serializer.dumps(action))
+                        if data:
+                            to_retry.append(client.transport.serializer.dumps(data))
                         to_retry_data.append((action, data))
                     else:
                         info = {

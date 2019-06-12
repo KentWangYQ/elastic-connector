@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
-from functools import wraps
+import asyncio
+from collections.abc import Coroutine
 from multiprocessing import Process
 
 
 class EventEmitter(object):
-    def __init__(self):
+    def __init__(self, loop=None):
         self._events = {}
+        self._loop = loop or asyncio.get_event_loop()
 
     def _on(self, event, listener):
         if event not in self._events:
@@ -25,7 +27,9 @@ class EventEmitter(object):
                     self.remove(event, listener)
                 # Isolate exception
                 try:
-                    listener(*args, **kwargs)
+                    r = listener(*args, **kwargs)
+                    if isinstance(r, Coroutine):
+                        asyncio.ensure_future(r, loop=self._loop)
                 except Exception as e:
                     # Exceptions raised during run listener emit to event 'i_error',
                     # customer can process them outside.

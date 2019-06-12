@@ -17,7 +17,7 @@ def main():
             logger.debug('[Oplog tail] a_ts:%s op:%s c_ns:%s' % (data.get('ts'), data.get('op'), data.get('ns')))
 
         @oplog_client.on('error')
-        def on_error(error, data):
+        def on_error(error, *args, **kwargs):
             logger.warning('Oplog tail error%r', error)
 
         loop = asyncio.get_event_loop()

@@ -26,16 +26,20 @@ tracks = {
     },
     'routing': '1',
     'mappings': {
-        'merchant': {},
+        'merchant': {
+            "_all": {"enabled": False}
+        },
         'impressiontrack': {
             '_parent': {
                 'type': 'merchant'
-            }
+            },
+            "_all": {"enabled": False}
         },
         'actsharedetail': {
             '_parent': {
                 'type': 'merchant'
-            }
+            },
+            "_all": {"enabled": False}
         }
     },
     'settings': {

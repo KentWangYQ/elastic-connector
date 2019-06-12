@@ -1,6 +1,4 @@
-import os
 import sys
-import pickle
 import bson.timestamp
 import asyncio
 import logging
@@ -106,11 +104,12 @@ class DocManager(DocManagerBase):
             '_type': doc_type
         }
 
-        for key in ('_index', '_parent', '_percolate', '_routing', '_timestamp',
-                    '_type', '_version', '_version_type', '_id',
-                    '_retry_on_conflict', 'pipeline'):
+        for key in async_helpers.ES_KEYS:
             if key in doc:
                 action[key] = doc.pop(key)
+
+        if '_i' in doc:
+            action['_i'] = doc.pop('_i')
 
         # ObjectId to str
         for key in ('_parent', '_id'):
@@ -223,15 +222,15 @@ class DocManager(DocManagerBase):
         self._upsert(doc, namespace, timestamp, doc_id=doc_id, is_update=True)
         logger.debug('[Update document] ns: %s' % namespace)
 
-    def delete(self, doc_id, namespace, timestamp=util.utc_now()):
+    def delete(self, doc, namespace, timestamp=util.utc_now()):
         """
         Delete document by doc_id
-        :param doc_id:
+        :param doc:
         :param namespace:
         :param timestamp:
         :return:
         """
-        action, action_log = self._gen_action(ElasticOperate.delete, namespace, timestamp, {'_id': doc_id})
+        action, action_log = self._gen_action(ElasticOperate.delete, namespace, timestamp, doc)
         self._push_to_buffer(action, action_log)
         logger.debug('[Delete document] ns: %s' % namespace)
 
@@ -259,11 +258,12 @@ class DocManager(DocManagerBase):
                 futures.append(asyncio.ensure_future(future))
 
             # await for all future complete
-            done, _ = await asyncio.wait(futures)
-            for future in done:
-                yield future.result()
+            if futures:
+                done, _ = await asyncio.wait(futures)
+                for future in done:
+                    yield future.result()
 
-    async def bulk_index(self, docs, namespace, params=None, chunk_size=None, doc_process=None):
+    async def bulk_index(self, docs, namespace, params=None, chunk_size=None, doc_process=None, ):
         """
         Insert multiple documents into Elasticsearch directly.
         :return:
@@ -308,10 +308,9 @@ class DocManager(DocManagerBase):
             raise Exception(failed)
 
         # bulk actions
-        succeed, failed = await asyncio.ensure_future(
-            async_helpers.bulk(client=self.es, actions=action_buffer, max_retries=3,
-                               initial_backoff=0.1,
-                               max_backoff=1))
+        succeed, failed = await async_helpers.bulk(client=self.es, actions=action_buffer, max_retries=3,
+                                                   initial_backoff=0.1,
+                                                   max_backoff=1)
         self.monitor.increase_processed(len(action_buffer))
         if succeed:
             logger.info('[Bulk] succeed:%d' % len(succeed))
@@ -403,7 +402,8 @@ class DocManager(DocManagerBase):
         futures = []
         while self.bulk_buffer.has_action():
             futures.append(self.commit())
-        await asyncio.wait(futures)
+        if futures:
+            await asyncio.wait(futures)
 
     async def delete_by_query(self, namespace, body, params=None):
         await self._wait_all_commit()  # commit all actions before this option, to keep sequential continuity
@@ -528,7 +528,7 @@ class BulkBuffer:
         self.blocks = []
         self._i = -1  # order for action
 
-    def _get_i(self):
+    def global_counter(self):
         self._i += 1
         return self._i
 
@@ -548,14 +548,15 @@ class BulkBuffer:
         return self.action_buffer.get(str(_id))
 
     def bulk_index(self, action, action_log):
-        action['_i'] = self._get_i()
+        if '_i' not in action:
+            action['_i'] = self.global_counter()
 
         # depend on unique _id
         self.action_buffer[str(action.get('_id'))] = action
         self.action_logs.append(action_log)
 
         if len(self.action_buffer) >= self.max_block_size:
-            self.blocks.append(self.get_buffer())
+            self.blocks.append(self.gen_block(self.action_buffer.values(), self.action_logs))
 
     def reset_action(self, _id):
         self.action_buffer[_id] = {}
@@ -568,11 +569,14 @@ class BulkBuffer:
         if self.blocks:
             return self.get_block()
         if self.action_buffer:
-            _actions = sorted(self.action_buffer.values(), key=lambda ac: ac['_id'])
-            _logs_block = self.docman.log_block_chain.gen_block(actions=self.action_logs)
-            self.clean_up()
-            return _actions, _logs_block
-        return [], None
+            return self.gen_block(self.action_buffer.values(), self.action_logs)
+        return None, None
+
+    def gen_block(self, actions, action_logs):
+        _actions = sorted(actions, key=lambda ac: ac['_id'])
+        _logs_block = self.docman.log_block_chain.gen_block(actions=action_logs)
+        self.clean_up()
+        return _actions, _logs_block
 
     def get_block(self):
         if self.blocks:
@@ -606,8 +610,8 @@ class BlockChain:
         body = {
             "size": 10000,
             "_source": [
-                "first_action.ts.$date",
-                "last_action.ts.$date"
+                "first_action.ts",
+                "last_action.ts"
             ],
             "query": {
                 "term": {
@@ -618,7 +622,7 @@ class BlockChain:
             },
             "sort": [
                 {
-                    "create_time.$date": {
+                    "create_time": {
                         "order": "desc"
                     }
                 }
@@ -647,7 +651,7 @@ class BlockChain:
                 },
                 "sort": [
                     {
-                        "create_time.$date": {
+                        "create_time": {
                             "order": "asc"
                         }
                     }
@@ -656,16 +660,16 @@ class BlockChain:
 
             rn = self.docman.es_sync.search(index=self.docman.log_index, doc_type=self.docman.log_type,
                                             body=first_non_valid_block_query_body)
-            t = util.utc_now_str()
+            t = util.utc_now()
             if rn.get('hits').get('total') > 0:
-                t = util.datetime2str(rn.get('hits').get('hits')[0].get('_source').get('create_time', {})) or t
+                t = rn.get('hits').get('hits')[0].get('_source').get('create_time') or t
 
             self._clean_invalid_block(t)
             last_valid_block_query_body = {
                 "size": 1,
                 "sort": [
                     {
-                        "create_time.$date": {
+                        "create_time": {
                             "order": "desc"
                         }
                     }
@@ -674,8 +678,7 @@ class BlockChain:
             rl = self.docman.es_sync.search(index=self.docman.log_index, doc_type=self.docman.log_type,
                                             body=last_valid_block_query_body)
             if rl.get('hits').get('total') > 0:
-                block = self._gen_sv_block_from_dict(
-                    rl.get('hits').get('hits')[0].get('_source')) or t
+                block = self._gen_sv_block_from_dict(rl.get('hits').get('hits')[0].get('_source'))
 
         if not block:
             logger.info('Last block does NOT exist')
@@ -690,7 +693,7 @@ class BlockChain:
                                             body={
                                                 "query": {
                                                     "range": {
-                                                        "create_time.$date": {
+                                                        "create_time": {
                                                             "gte": start_time
                                                         }
                                                     }
