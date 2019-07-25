@@ -17,9 +17,13 @@ Elasticsearch connector是一个将其他数据源(如数据库系统)实时同�
 ### 功能介绍
 将数据从数据源准确、一致、高效的复制到Elasticsearch。
 1. 全量同步：将全部数据从数据源完整同步到ElasticSearch。用于初始化数据，或者定期同步。如果数据量较大，需要确保两次同步之间有足够的时间间隔。
+    1. 架构图
+        ![full_sync_v3_architecture](images/full_sync_v3_architecture.png)
 2. 实时同步：即增量同步。数据初始化之后，通过在Elasticsearch重放数据源操作日志，实现实时增量同步。理论精度可达毫秒级，实际有效精度秒级。该功能需要基于数据源的操作日志系统，如mongodb的oplog机制。
-
-    - todo:配图
+    1. 架构图 
+        ![rts_v3_architecture](images/rts_v3_architecture.png)
+    2. 流程图
+        ![rts_v3_flow](images/rts_v3_flow.png)
     
 ### 高性能机制
 1. async: 基于python3 协程和asyncio，实现异步I/O并发。充分利用网络和磁盘I/O资源。
